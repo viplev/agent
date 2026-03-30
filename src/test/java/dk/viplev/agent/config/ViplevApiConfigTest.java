@@ -2,6 +2,7 @@ package dk.viplev.agent.config;
 
 import dk.viplev.agent.generated.api.AgentApi;
 import dk.viplev.agent.generated.invoker.ApiClient;
+import dk.viplev.agent.generated.invoker.auth.HttpBearerAuth;
 import org.junit.jupiter.api.Test;
 
 import java.util.UUID;
@@ -18,6 +19,8 @@ class ViplevApiConfigTest {
         ApiClient client = config.viplevApiClient("https://viplev.example.com", "test-token");
 
         assertThat(client.getBasePath()).isEqualTo("https://viplev.example.com");
+        var bearerAuth = (HttpBearerAuth) client.getAuthentications().get("bearerAuth");
+        assertThat(bearerAuth.getBearerToken()).isEqualTo("test-token");
     }
 
     @Test
@@ -41,6 +44,14 @@ class ViplevApiConfigTest {
     @Test
     void viplevEnvironmentId_throwsOnInvalidUuid() {
         assertThatThrownBy(() -> config.viplevEnvironmentId("not-a-uuid"))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("viplev.environment-id");
+    }
+
+    @Test
+    void viplevEnvironmentId_throwsOnBlank() {
+        assertThatThrownBy(() -> config.viplevEnvironmentId("  "))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("viplev.environment-id");
     }
 }

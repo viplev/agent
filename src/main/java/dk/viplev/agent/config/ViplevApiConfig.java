@@ -27,6 +27,17 @@ public class ViplevApiConfig {
 
     @Bean
     public UUID viplevEnvironmentId(@Value("${viplev.environment-id}") String environmentId) {
-        return UUID.fromString(environmentId);
+        if (environmentId == null || environmentId.isBlank()) {
+            throw new IllegalArgumentException(
+                    "Configuration property 'viplev.environment-id' (env: VIPLEV_ENVIRONMENT_ID) "
+                            + "must be set to a non-empty UUID string.");
+        }
+        try {
+            return UUID.fromString(environmentId);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException(
+                    "Configuration property 'viplev.environment-id' (env: VIPLEV_ENVIRONMENT_ID) "
+                            + "must be a valid UUID, but was: '" + environmentId + "'.", e);
+        }
     }
 }

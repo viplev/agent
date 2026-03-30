@@ -16,6 +16,7 @@ import org.springframework.web.client.RestClientException;
 
 import java.util.List;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 @Slf4j
 @Component
@@ -28,68 +29,59 @@ public class ViplevApiAdapter implements ViplevApiPort {
     @Override
     public List<MessageDTO> pollMessages() {
         log.debug("Polling messages for environment {}", viplevEnvironmentId);
-        try {
-            return agentApi.listMessages(viplevEnvironmentId);
-        } catch (HttpStatusCodeException e) {
-            throw new ViplevApiException("Failed to poll messages: " + e.getStatusText(),
-                    e.getStatusCode().value(), e);
-        } catch (RestClientException e) {
-            throw new ViplevApiException("Failed to poll messages: " + e.getMessage(), 0, e);
-        }
+        return execute("poll messages", () -> agentApi.listMessages(viplevEnvironmentId));
     }
 
     @Override
     public void registerServices(ServiceRegistrationDTO registration) {
         log.debug("Registering services for environment {}", viplevEnvironmentId);
-        try {
+        execute("register services", () -> {
             agentApi.registerServices(viplevEnvironmentId, registration);
-        } catch (HttpStatusCodeException e) {
-            throw new ViplevApiException("Failed to register services: " + e.getStatusText(),
-                    e.getStatusCode().value(), e);
-        } catch (RestClientException e) {
-            throw new ViplevApiException("Failed to register services: " + e.getMessage(), 0, e);
-        }
+            return null;
+        });
     }
 
     @Override
     public void updateRunStatus(UUID benchmarkId, UUID runId, BenchmarkRunStatusUpdateDTO status) {
         log.debug("Updating run status for benchmark {} run {} in environment {}",
                 benchmarkId, runId, viplevEnvironmentId);
-        try {
+        execute("update run status", () -> {
             agentApi.updateBenchmarkRunStatus(viplevEnvironmentId, benchmarkId, runId, status);
-        } catch (HttpStatusCodeException e) {
-            throw new ViplevApiException("Failed to update run status: " + e.getStatusText(),
-                    e.getStatusCode().value(), e);
-        } catch (RestClientException e) {
-            throw new ViplevApiException("Failed to update run status: " + e.getMessage(), 0, e);
-        }
+            return null;
+        });
     }
 
     @Override
     public void sendResourceMetrics(UUID benchmarkId, UUID runId, MetricResourceDTO metrics) {
         log.debug("Sending resource metrics for benchmark {} run {} in environment {}",
                 benchmarkId, runId, viplevEnvironmentId);
-        try {
+        execute("send resource metrics", () -> {
             agentApi.storeResourceMetrics(viplevEnvironmentId, benchmarkId, runId, metrics);
-        } catch (HttpStatusCodeException e) {
-            throw new ViplevApiException("Failed to send resource metrics: " + e.getStatusText(),
-                    e.getStatusCode().value(), e);
-        } catch (RestClientException e) {
-            throw new ViplevApiException("Failed to send resource metrics: " + e.getMessage(), 0, e);
-        }
+            return null;
+        });
     }
 
     @Override
     public void sendPerformanceMetrics(UUID benchmarkId, UUID runId, MetricPerformanceDTO metrics) {
         log.debug("Sending performance metrics for benchmark {} run {} in environment {}",
                 benchmarkId, runId, viplevEnvironmentId);
-        try {
+        execute("send performance metrics", () -> {
             agentApi.storePerformanceMetrics(viplevEnvironmentId, benchmarkId, runId, metrics);
+            return null;
+        });
+    }
+
+    private <T> T execute(String operation, Supplier<T> action) {
+        try {
+            return action.get();
         } catch (HttpStatusCodeException e) {
-            throw new ViplevApiException("Failed to send performance metrics: " + e.getStatusText(),
+            throw new ViplevApiException(
+                    String.format("Failed to %s: HTTP %d %s — %s",
+                            operation, e.getStatusCode().value(), e.getStatusText(),
+                            e.getResponseBodyAsString()),
                     e.getStatusCode().value(), e);
         } catch (RestClientException e) {
-            throw new ViplevApiException("Failed to send performance metrics: " + e.getMessage(), 0, e);
+            throw new ViplevApiException("Failed to " + operation + ": " + e.getMessage(), 0, e);
         }
     }
 }
