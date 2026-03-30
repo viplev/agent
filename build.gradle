@@ -5,7 +5,7 @@ plugins {
 }
 
 group = 'dk.viplev'
-version = '0.0.1-SNAPSHOT'
+version = findProperty('appVersion') ?: '1.0.0'
 
 java {
 	toolchain {
@@ -31,6 +31,15 @@ dependencies {
 	annotationProcessor 'org.projectlombok:lombok'
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+bootJar {
+	archiveBaseName = 'viplev-agent'
+	archiveVersion = ''
+}
+
+jar {
+	enabled = false
 }
 
 tasks.named('test') {
