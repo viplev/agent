@@ -2,6 +2,7 @@ plugins {
 	id 'java'
 	id 'org.springframework.boot' version '3.5.13'
 	id 'io.spring.dependency-management' version '1.1.7'
+	id 'org.openapi.generator' version '7.11.0'
 }
 
 group = 'dk.viplev'
@@ -25,12 +26,58 @@ repositories {
 
 dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+	implementation 'org.springframework.boot:spring-boot-starter-web'
+	implementation 'org.springframework.boot:spring-boot-starter-actuator'
 	implementation 'org.liquibase:liquibase-core'
+	implementation 'org.openapitools:jackson-databind-nullable:0.2.6'
+	implementation 'com.github.docker-java:docker-java-core:3.4.1'
+	implementation 'com.github.docker-java:docker-java-transport-httpclient5:3.4.1'
+	implementation 'org.mapstruct:mapstruct:1.6.3'
 	compileOnly 'org.projectlombok:lombok'
-	runtimeOnly 'com.h2database:h2'
+	runtimeOnly 'org.xerial:sqlite-jdbc:3.47.2.0'
+	runtimeOnly 'org.hibernate.orm:hibernate-community-dialects'
 	annotationProcessor 'org.projectlombok:lombok'
+	annotationProcessor 'org.projectlombok:lombok-mapstruct-binding:0.2.0'
+	annotationProcessor 'org.mapstruct:mapstruct-processor:1.6.3'
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+	testRuntimeOnly 'com.h2database:h2'
+}
+
+openApiGenerate {
+	generatorName = 'java'
+	library = 'resttemplate'
+	inputSpec = "$projectDir/src/main/resources/openapi/outbound/openapi.yaml"
+	outputDir = "${layout.buildDirectory.get()}/generated/openapi"
+	apiPackage = 'dk.viplev.agent.generated.api'
+	modelPackage = 'dk.viplev.agent.generated.model'
+	invokerPackage = 'dk.viplev.agent.generated.invoker'
+	configOptions = [
+		dateLibrary          : 'java8',
+		useJakartaEe         : 'true',
+		openApiNullable      : 'true',
+		documentationProvider: 'none',
+		serializationLibrary : 'jackson',
+	]
+}
+
+sourceSets {
+	main {
+		java {
+			srcDir "${layout.buildDirectory.get()}/generated/openapi/src/main/java"
+		}
+	}
+}
+
+compileJava.dependsOn tasks.openApiGenerate
+
+bootJar {
+	archiveBaseName = 'viplev-agent'
+	archiveVersion = ''
+}
+
+jar {
+	enabled = false
 }
 
 bootJar {
