@@ -14,6 +14,11 @@ public class ViplevApiConfig {
     @Bean
     public ApiClient viplevApiClient(@Value("${viplev.url}") String baseUrl,
                                      @Value("${viplev.token}") String token) {
+        if (baseUrl == null || baseUrl.isBlank()) {
+            throw new IllegalArgumentException(
+                    "Configuration property 'viplev.url' (env: VIPLEV_URL) "
+                            + "must be set to a non-empty URL.");
+        }
         if (token == null || token.isBlank()) {
             throw new IllegalArgumentException(
                     "Configuration property 'viplev.token' (env: VIPLEV_TOKEN) "

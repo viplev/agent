@@ -61,4 +61,11 @@ class ViplevApiConfigTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("viplev.token");
     }
+
+    @Test
+    void viplevApiClient_throwsOnBlankUrl() {
+        assertThatThrownBy(() -> config.viplevApiClient("  ", "test-token"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("viplev.url");
+    }
 }
