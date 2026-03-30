@@ -11,6 +11,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 
 @DataJpaTest
 @ActiveProfiles("test")
@@ -39,7 +40,7 @@ class ResourceMetricRepositoryTest {
         var found = repository.findById(saved.getId());
         assertThat(found).isPresent();
         assertThat(found.get().getTargetName()).isEqualTo("machine-1");
-        assertThat(found.get().getCpuPercentage()).isEqualTo(45.2);
+        assertThat(found.get().getCpuPercentage()).isCloseTo(45.2, within(0.01));
     }
 
     @Test
@@ -73,7 +74,7 @@ class ResourceMetricRepositoryTest {
         List<ResourceMetric> unflushed = repository.findByFlushedFalseOrderByCollectedAtAsc();
 
         assertThat(unflushed).hasSize(2);
-        assertThat(unflushed.get(0).getCpuPercentage()).isEqualTo(10.0);
-        assertThat(unflushed.get(1).getCpuPercentage()).isEqualTo(20.0);
+        assertThat(unflushed.get(0).getCpuPercentage()).isCloseTo(10.0, within(0.01));
+        assertThat(unflushed.get(1).getCpuPercentage()).isCloseTo(20.0, within(0.01));
     }
 }

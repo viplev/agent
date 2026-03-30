@@ -17,7 +17,6 @@ public class ResourceMetric {
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
-    @Column(name = "id", nullable = false, length = 36)
     private UUID id;
 
     @Column(name = "collected_at", nullable = false)
