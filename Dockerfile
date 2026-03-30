@@ -10,7 +10,7 @@ RUN gradle dependencies --no-daemon
 COPY src src
 RUN gradle bootJar -PappVersion=${APP_VERSION} --no-daemon
 
-FROM amazoncorretto:21-alpine-jdk AS runtime
+FROM amazoncorretto:21-alpine AS runtime
 
 RUN apk --no-cache add curl
 
