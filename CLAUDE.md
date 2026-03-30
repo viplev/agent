@@ -15,7 +15,7 @@ The communication flow is as follows: the user defines a test scenario via the U
 
 ## OpenAPI Client Generation
 
-The OpenAPI spec at `src/main/resources/openapi/outbound/openapi.yaml` defines the VIPLEV platform API — the API that the agent **calls as a client**, not an API it serves. The agent has no inbound REST endpoints.
+The OpenAPI spec at `src/main/resources/openapi/outbound/openapi.yaml` defines the VIPLEV platform API — the API that the agent **calls as a client**, not an API it serves. The agent has no inbound business REST endpoints (only Spring Actuator endpoints for health checks).
 
 The `openapi-generator` Gradle plugin (v7.11.0) generates a Java REST client using the `resttemplate` library:
 
@@ -45,7 +45,7 @@ Use the Docker adapter at `adapter/outbound/container/docker/` as a reference im
 ## Key Architectural Decisions
 
 - **Hexagonal architecture** — Domain logic in `domain/` has zero dependencies on Spring, Docker SDK, or HTTP. All infrastructure access goes through port interfaces, allowing adapters to be swapped independently.
-- **Agent-as-client (no inbound HTTP)** — The agent polls VIPLEV for instructions rather than exposing REST endpoints. The only inbound adapter is scheduling (timers). This simplifies deployment — no ingress or port-forwarding needed.
+- **Agent-as-client (no inbound business HTTP)** — The agent polls VIPLEV for instructions rather than exposing business REST endpoints. The only inbound adapter is scheduling (timers). Actuator endpoints (`/actuator/health`) are exposed for liveness probes but carry no business logic. This simplifies deployment — no ingress or port-forwarding needed.
 - **OpenAPI-generated outbound client** — Code generation from the VIPLEV OpenAPI spec ensures type safety and keeps the agent in sync with the platform API contract. The spec is the single source of truth.
 - **Spring profiles for runtime selection** — `@Profile("docker")` / `@Profile("kubernetes")` cleanly separates adapter wiring. Only one container adapter is loaded at a time, selected by `VIPLEV_RUNTIME`.
 - **SQLite with Liquibase** — An embedded database provides metric buffering and state persistence without requiring an external DB server. Liquibase manages schema migrations via `src/main/resources/db/changelog/`.

@@ -94,11 +94,11 @@ src/main/java/dk/viplev/agent/
 
 ### Startup
 
-The agent authenticates with VIPLEV using `VIPLEV_TOKEN`, discovers all running containers via the container runtime, and registers the host and its services with VIPLEV (`POST /environments/{id}/services`).
+The agent authenticates with VIPLEV using `VIPLEV_TOKEN`, discovers all running containers via the container runtime, and registers the host and its services with VIPLEV (`POST /v1/environments/{environmentId}/services`).
 
 ### Idle
 
-Polls `GET /environments/{id}/message` every **~15 seconds** for pending benchmark instructions. Simultaneously watches Docker events to keep the service registration up to date when containers start or stop.
+Polls `GET /v1/environments/{environmentId}/message` every **~15 seconds** for pending benchmark instructions. Simultaneously watches Docker events to keep the service registration up to date when containers start or stop.
 
 ### Active Run
 
@@ -130,12 +130,12 @@ The agent can set a run to `STARTED`, `FINISHED`, `FAILED`, or `STOPPED`. The st
 
 ## Configuration
 
-| Variable | Default | Required | Description |
-|---|---|---|---|
-| `VIPLEV_URL` | `http://localhost:8080` | No | Base URL of the VIPLEV platform API |
-| `VIPLEV_TOKEN` | *(none)* | Yes | Bearer token for agent authentication |
-| `VIPLEV_ENVIRONMENT_ID` | *(none)* | Yes | UUID of the environment this agent belongs to |
-| `VIPLEV_RUNTIME` | `docker` | No | Container runtime profile: `docker` or `kubernetes` |
+| Variable | Type | Default | Required | Description |
+|---|---|---|---|---|
+| `VIPLEV_URL` | string | `http://localhost:8080` | No | Base URL of the VIPLEV platform API |
+| `VIPLEV_TOKEN` | string | *(none)* | Yes | Bearer token for agent authentication |
+| `VIPLEV_ENVIRONMENT_ID` | string (UUID) | *(none)* | Yes | UUID of the environment this agent belongs to |
+| `VIPLEV_RUNTIME` | string | `docker` | No | Container runtime profile: `docker` or `kubernetes` |
 
 These map to Spring properties `viplev.url`, `viplev.token`, `viplev.environment-id`, and `spring.profiles.active` in `application.properties`.
 
@@ -196,7 +196,9 @@ docker run -d \
   ghcr.io/viplev/agent:latest
 ```
 
-Mounting the Docker socket is required for the agent to discover and monitor containers. For Kubernetes, the agent runs as a pod with a ServiceAccount that has appropriate RBAC permissions.
+Mounting the Docker socket is required for the agent to discover and monitor containers. **Security note:** exposing `/var/run/docker.sock` to a container effectively gives it root-equivalent control over the host's Docker daemon. Only run the agent on trusted hosts, and consider least-privilege setups such as a dedicated monitoring node or a restricted Docker daemon.
+
+For Kubernetes, the agent runs as a pod with a ServiceAccount that has appropriate RBAC permissions.
 
 Or with Docker Compose:
 
