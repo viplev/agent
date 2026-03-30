@@ -14,6 +14,11 @@ public class ViplevApiConfig {
     @Bean
     public ApiClient viplevApiClient(@Value("${viplev.url}") String baseUrl,
                                      @Value("${viplev.token}") String token) {
+        if (token == null || token.isBlank()) {
+            throw new IllegalArgumentException(
+                    "Configuration property 'viplev.token' (env: VIPLEV_TOKEN) "
+                            + "must be set to a non-empty bearer token.");
+        }
         ApiClient client = new ApiClient();
         client.setBasePath(baseUrl);
         client.setBearerToken(token);

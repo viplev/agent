@@ -11,8 +11,8 @@ import dk.viplev.agent.port.outbound.rest.ViplevApiPort;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
-import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestClientResponseException;
 
 import java.util.List;
 import java.util.UUID;
@@ -74,7 +74,7 @@ public class ViplevApiAdapter implements ViplevApiPort {
     private <T> T execute(String operation, Supplier<T> action) {
         try {
             return action.get();
-        } catch (HttpStatusCodeException e) {
+        } catch (RestClientResponseException e) {
             throw new ViplevApiException(
                     String.format("Failed to %s: HTTP %d %s — %s",
                             operation, e.getStatusCode().value(), e.getStatusText(),
