@@ -1,0 +1,12 @@
+services:
+  agent:
+    image: ghcr.io/viplev/agent:latest
+    build: .
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - VIPLEV_URL=${VIPLEV_URL}
+      - VIPLEV_TOKEN=${VIPLEV_TOKEN}
+      - VIPLEV_ENVIRONMENT_ID=${VIPLEV_ENVIRONMENT_ID}
+    ports:
+      - "8080:8080"
