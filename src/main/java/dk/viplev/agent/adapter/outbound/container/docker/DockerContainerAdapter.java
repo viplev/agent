@@ -43,7 +43,7 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
     private final ProcFileReader procFileReader;
 
     private final ConcurrentHashMap<String, CpuReading> previousCpuReadings = new ConcurrentHashMap<>();
-    private volatile CpuReading previousHostCpuReading;
+    private volatile HostCpuReading previousHostCpuReading;
     private volatile Closeable eventStream;
 
     public DockerContainerAdapter(DockerClient dockerClient, ProcFileReader procFileReader) {
@@ -148,6 +148,14 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
     @Override
     public void watchContainerEvents(Consumer<ContainerEvent> callback) {
         execute("watch container events", () -> {
+            if (eventStream != null) {
+                try {
+                    eventStream.close();
+                } catch (IOException e) {
+                    log.debug("Failed to close previous event stream", e);
+                }
+            }
+
             eventStream = dockerClient.eventsCmd()
                     .withEventTypeFilter("container")
                     .withEventFilter("start", "stop", "die")
@@ -156,9 +164,16 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
                         public void onNext(Event event) {
                             ContainerEvent.EventType eventType = mapEventAction(event.getAction());
                             if (eventType != null) {
+                                String containerId = event.getActor().getId();
                                 String containerName = extractContainerName(event);
+
+                                if (eventType == ContainerEvent.EventType.DIED
+                                        || eventType == ContainerEvent.EventType.STOPPED) {
+                                    previousCpuReadings.remove(containerId);
+                                }
+
                                 callback.accept(new ContainerEvent(
-                                        event.getActor().getId(),
+                                        containerId,
                                         containerName,
                                         eventType,
                                         Instant.ofEpochSecond(event.getTime())
@@ -181,6 +196,8 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
 
     // -- Container info mapping --
 
+    // Note: inspectContainerCmd is called per container (N+1) to retrieve resource limits.
+    // Acceptable for the expected container count; revisit if performance becomes an issue.
     private ContainerInfo toContainerInfo(Container container) {
         InspectContainerResponse inspection = dockerClient.inspectContainerCmd(container.getId()).exec();
         HostConfig hostConfig = inspection.getHostConfig();
@@ -212,7 +229,7 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
         var result = new Statistics[1];
         var latch = new CountDownLatch(1);
 
-        dockerClient.statsCmd(containerId)
+        ResultCallback.Adapter<Statistics> callback = dockerClient.statsCmd(containerId)
                 .withNoStream(true)
                 .exec(new ResultCallback.Adapter<>() {
                     @Override
@@ -230,6 +247,12 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new ContainerRuntimeException("Interrupted while fetching stats for container " + containerId, e);
+        } finally {
+            try {
+                callback.close();
+            } catch (IOException e) {
+                log.debug("Failed to close stats callback for container {}", containerId, e);
+            }
         }
 
         return result[0];
@@ -308,16 +331,16 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
             total += v;
         }
 
-        CpuReading current = new CpuReading(total, idle);
-        CpuReading previous = previousHostCpuReading;
+        HostCpuReading current = new HostCpuReading(total, idle);
+        HostCpuReading previous = previousHostCpuReading;
         previousHostCpuReading = current;
 
         if (previous == null) {
             return 0.0;
         }
 
-        long totalDelta = current.totalCpuNanos() - previous.totalCpuNanos();
-        long idleDelta = current.systemCpuNanos() - previous.systemCpuNanos();
+        long totalDelta = current.total() - previous.total();
+        long idleDelta = current.idle() - previous.idle();
 
         if (totalDelta <= 0) {
             return 0.0;
@@ -381,9 +404,10 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
         for (String line : diskstats.split("\n")) {
             String[] parts = line.trim().split("\\s+");
             if (parts.length < 11) continue;
-            // Only count whole-disk devices (skip partitions like sda1)
+            // Only count whole-disk devices (skip partitions like sda1, nvme0n1p1, mmcblk0p1)
             String name = parts[2];
             if (name.matches(".*\\d$") && !name.matches("^(nvme|mmcblk).*")) continue;
+            if (name.matches("^nvme.*p\\d+$") || name.matches("^mmcblk.*p\\d+$")) continue;
             readBytes += Long.parseLong(parts[5]) * 512;
             writeBytes += Long.parseLong(parts[9]) * 512;
         }
@@ -427,4 +451,6 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
     }
 
     record CpuReading(long totalCpuNanos, long systemCpuNanos) {}
+
+    record HostCpuReading(long total, long idle) {}
 }
