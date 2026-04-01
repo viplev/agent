@@ -164,6 +164,11 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
                         public void onNext(Event event) {
                             ContainerEvent.EventType eventType = mapEventAction(event.getAction());
                             if (eventType != null) {
+                                if (event.getActor() == null || event.getActor().getId() == null) {
+                                    log.debug("Received Docker event without actor for action '{}', skipping",
+                                            event.getAction());
+                                    return;
+                                }
                                 String containerId = event.getActor().getId();
                                 String containerName = extractContainerName(event);
 
@@ -190,8 +195,8 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
     public void close() throws IOException {
         if (eventStream != null) {
             eventStream.close();
+            eventStream = null;
         }
-        dockerClient.close();
     }
 
     // -- Container info mapping --
@@ -310,9 +315,13 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
         }
 
         Long onlineCpus = stats.getCpuStats().getOnlineCpus();
-        long numCpus = onlineCpus != null && onlineCpus > 0
-                ? onlineCpus
-                : stats.getCpuStats().getCpuUsage().getPercpuUsage().size();
+        long numCpus;
+        if (onlineCpus != null && onlineCpus > 0) {
+            numCpus = onlineCpus;
+        } else {
+            var percpu = stats.getCpuStats().getCpuUsage().getPercpuUsage();
+            numCpus = percpu != null && !percpu.isEmpty() ? percpu.size() : 1;
+        }
 
         return ((double) cpuDelta / systemDelta) * numCpus * 100.0;
     }
@@ -325,6 +334,10 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
                 .orElseThrow(() -> new ContainerRuntimeException("Empty /proc/stat"));
 
         long[] cpuValues = parseCpuLine(firstLine);
+        if (cpuValues.length < 5) {
+            throw new ContainerRuntimeException(
+                    "Malformed /proc/stat CPU line: expected at least 5 fields but got " + cpuValues.length);
+        }
         long idle = cpuValues[3] + cpuValues[4]; // idle + iowait
         long total = 0;
         for (long v : cpuValues) {
