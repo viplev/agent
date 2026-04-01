@@ -33,6 +33,10 @@ public class DockerConfig {
 
     @Bean
     public ProcFileReader procFileReader(@Value("${agent.proc-path:/proc}") String procPath) {
+        if (procPath == null || procPath.isBlank()) {
+            throw new IllegalArgumentException(
+                    "Configuration property 'agent.proc-path' must be set to a non-empty path.");
+        }
         return new ProcFileReader(Path.of(procPath));
     }
 }

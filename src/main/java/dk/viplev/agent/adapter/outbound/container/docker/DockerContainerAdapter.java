@@ -177,12 +177,17 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
                                     previousCpuReadings.remove(containerId);
                                 }
 
-                                callback.accept(new ContainerEvent(
-                                        containerId,
-                                        containerName,
-                                        eventType,
-                                        Instant.ofEpochSecond(event.getTime())
-                                ));
+                                try {
+                                    callback.accept(new ContainerEvent(
+                                            containerId,
+                                            containerName,
+                                            eventType,
+                                            Instant.ofEpochSecond(event.getTime())
+                                    ));
+                                } catch (Exception e) {
+                                    log.error("Error in container event callback for {} ({}), event {}",
+                                            containerId, containerName, eventType, e);
+                                }
                             }
                         }
                     });
@@ -232,6 +237,7 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
 
     private Statistics fetchStatistics(String containerId) {
         var result = new Statistics[1];
+        var error = new Throwable[1];
         var latch = new CountDownLatch(1);
 
         ResultCallback.Adapter<Statistics> callback = dockerClient.statsCmd(containerId)
@@ -242,12 +248,32 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
                         result[0] = stats;
                         latch.countDown();
                     }
+
+                    @Override
+                    public void onError(Throwable throwable) {
+                        error[0] = throwable;
+                        latch.countDown();
+                    }
+
+                    @Override
+                    public void onComplete() {
+                        latch.countDown();
+                    }
                 });
 
         try {
             if (!latch.await(10, TimeUnit.SECONDS)) {
                 throw new ContainerRuntimeException(
                         "Timed out waiting for stats from container " + containerId);
+            }
+            if (error[0] != null) {
+                throw new ContainerRuntimeException(
+                        "Error fetching stats for container " + containerId + ": " + error[0].getMessage(),
+                        error[0]);
+            }
+            if (result[0] == null) {
+                throw new ContainerRuntimeException(
+                        "No stats received for container " + containerId);
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -458,6 +484,9 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
             throw new ContainerRuntimeException(
                     "Failed to " + operation + ": " + e.getMessage(), e);
         } catch (DockerClientException e) {
+            throw new ContainerRuntimeException(
+                    "Failed to " + operation + ": " + e.getMessage(), e);
+        } catch (RuntimeException e) {
             throw new ContainerRuntimeException(
                     "Failed to " + operation + ": " + e.getMessage(), e);
         }
