@@ -11,25 +11,31 @@ import org.springframework.stereotype.Component;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.Set;
+import java.util.UUID;
 
 @Component
 public class HostInfoProviderImpl implements HostInfoProvider {
 
     private static final Logger log = LoggerFactory.getLogger(HostInfoProviderImpl.class);
 
+    private final String machineIdOverride;
     private final String machineIdPath;
     private final String procPath;
 
     private HostDTO cachedHostInfo;
 
     public HostInfoProviderImpl(
+            @Value("${agent.machine-id:}") String machineIdOverride,
             @Value("${agent.machine-id-path:/etc/machine-id}") String machineIdPath,
             @Value("${agent.proc-path:/proc}") String procPath) {
+        this.machineIdOverride = machineIdOverride;
         this.machineIdPath = machineIdPath;
         this.procPath = procPath;
     }
@@ -67,12 +73,48 @@ public class HostInfoProviderImpl implements HostInfoProvider {
     }
 
     private String readMachineId() {
-        try {
-            return Files.readString(Path.of(machineIdPath)).trim();
-        } catch (Exception e) {
-            log.warn("Failed to read machine-id from {}, using empty string", machineIdPath, e);
-            return "";
+        if (machineIdOverride != null && !machineIdOverride.isBlank()) {
+            return machineIdOverride.trim();
         }
+        try {
+            String id = Files.readString(Path.of(machineIdPath)).trim();
+            if (!id.isEmpty()) {
+                return id;
+            }
+        } catch (Exception e) {
+            log.warn("Failed to read machine-id from {}", machineIdPath, e);
+        }
+        String fallback = generateFallbackMachineId();
+        log.info("Using generated fallback machine-id: {}", fallback);
+        return fallback;
+    }
+
+    private String generateFallbackMachineId() {
+        String hostname = readHostname();
+        String mac = readFirstMacAddress();
+        String seed = hostname + "|" + mac;
+        return UUID.nameUUIDFromBytes(seed.getBytes(StandardCharsets.UTF_8))
+                .toString().replace("-", "");
+    }
+
+    private String readFirstMacAddress() {
+        try {
+            var interfaces = NetworkInterface.getNetworkInterfaces();
+            if (interfaces != null) {
+                for (var iface : Collections.list(interfaces)) {
+                    if (iface.isLoopback() || !iface.isUp()) {
+                        continue;
+                    }
+                    byte[] mac = iface.getHardwareAddress();
+                    if (mac != null && mac.length > 0) {
+                        return HexFormat.of().formatHex(mac);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.debug("Failed to read MAC address for fallback machine-id", e);
+        }
+        return "no-mac";
     }
 
     private String readIpAddress() {

@@ -104,11 +104,36 @@ class HostInfoProviderImplTest {
     void getHostInfo_handlesMissingMachineIdFile() {
         var provider = createProvider(tempDir.resolve("nonexistent").toString());
 
-        assertThat(provider.getHostInfo().getMachineId()).isEmpty();
+        assertThat(provider.getHostInfo().getMachineId())
+                .isNotBlank()
+                .matches("[0-9a-f]{32}");
+    }
+
+    @Test
+    void getHostInfo_fallbackMachineId_isDeterministic() {
+        var provider1 = createProvider(tempDir.resolve("nonexistent").toString());
+        var provider2 = createProvider(tempDir.resolve("nonexistent").toString());
+
+        assertThat(provider1.getHostInfo().getMachineId())
+                .isEqualTo(provider2.getHostInfo().getMachineId());
+    }
+
+    @Test
+    void getHostInfo_usesMachineIdOverride() throws IOException {
+        Path machineIdFile = tempDir.resolve("machine-id");
+        Files.writeString(machineIdFile, "file-value");
+
+        var provider = createProvider("my-custom-id", machineIdFile.toString());
+
+        assertThat(provider.getHostInfo().getMachineId()).isEqualTo("my-custom-id");
     }
 
     private HostInfoProviderImpl createProvider(String machineIdPath) {
-        var provider = new HostInfoProviderImpl(machineIdPath, tempDir.toString());
+        return createProvider("", machineIdPath);
+    }
+
+    private HostInfoProviderImpl createProvider(String machineIdOverride, String machineIdPath) {
+        var provider = new HostInfoProviderImpl(machineIdOverride, machineIdPath, tempDir.toString());
         provider.init();
         return provider;
     }
