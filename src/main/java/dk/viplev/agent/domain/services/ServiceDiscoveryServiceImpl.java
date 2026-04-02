@@ -52,9 +52,9 @@ public class ServiceDiscoveryServiceImpl implements ServiceDiscoveryUseCase {
                 .serviceName(container.name())
                 .imageSha(container.imageSha())
                 .imageName(container.imageName())
-                .cpuLimit(container.cpuLimit() != null
+                .cpuLimit(container.cpuLimit() != null && container.cpuLimit() > 0
                         ? container.cpuLimit() / NANO_CPUS_PER_CORE : null)
-                .cpuReservation(container.cpuReservation() != null
+                .cpuReservation(container.cpuReservation() != null && container.cpuReservation() > 0
                         ? container.cpuReservation() / CPU_SHARES_PER_CORE : null)
                 .memoryLimitBytes(container.memoryLimit())
                 .memoryReservationBytes(container.memoryReservation());

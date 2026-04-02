@@ -49,7 +49,7 @@ public class HostInfoProviderImpl implements HostInfoProvider {
                 .name(readHostname())
                 .machineId(readMachineId())
                 .ipAddress(readIpAddress())
-                .os(System.getProperty("os.name"))
+                .os(System.getProperty("os.name") != null ? System.getProperty("os.name") : "unknown")
                 .osVersion(System.getProperty("os.version"))
                 .cpuModel(readCpuModel())
                 .cpuCores(readCpuCores())
@@ -78,6 +78,9 @@ public class HostInfoProviderImpl implements HostInfoProvider {
     private String readIpAddress() {
         try {
             var interfaces = NetworkInterface.getNetworkInterfaces();
+            if (interfaces == null) {
+                return InetAddress.getLocalHost().getHostAddress();
+            }
             for (var iface : Collections.list(interfaces)) {
                 if (iface.isLoopback() || !iface.isUp()) {
                     continue;

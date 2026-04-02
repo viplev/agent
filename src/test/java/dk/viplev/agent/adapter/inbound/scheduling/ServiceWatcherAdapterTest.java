@@ -48,7 +48,7 @@ class ServiceWatcherAdapterTest {
     void onApplicationReady_performsInitialSync() {
         adapter.onApplicationReady();
 
-        verify(serviceDiscoveryUseCase).syncServices();
+        verify(serviceDiscoveryUseCase, timeout(TEST_DEBOUNCE_MS * 3)).syncServices();
         verify(containerPort).watchContainerEvents(org.mockito.ArgumentMatchers.any());
     }
 

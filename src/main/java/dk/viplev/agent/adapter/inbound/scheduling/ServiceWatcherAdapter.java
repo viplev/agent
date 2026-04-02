@@ -49,10 +49,10 @@ public class ServiceWatcherAdapter {
 
     @EventListener(ApplicationReadyEvent.class)
     public void onApplicationReady() {
-        log.info("Application ready, performing initial service sync");
-        executeSyncSafely();
+        log.info("Application ready, starting container event watcher and performing initial service sync");
         containerPort.watchContainerEvents(this::onContainerEvent);
         log.info("Watching for container events");
+        scheduler.submit(this::executeSyncSafely);
     }
 
     @PreDestroy
