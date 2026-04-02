@@ -31,7 +31,7 @@ dependencies {
 	implementation 'org.liquibase:liquibase-core'
 	implementation 'org.openapitools:jackson-databind-nullable:0.2.6'
 	implementation 'com.github.docker-java:docker-java-core:3.4.1'
-	implementation 'com.github.docker-java:docker-java-transport-httpclient5:3.4.1'
+	implementation 'com.github.docker-java:docker-java-transport-zerodep:3.4.1'
 	implementation 'org.mapstruct:mapstruct:1.6.3'
 	compileOnly 'org.projectlombok:lombok'
 	runtimeOnly 'org.xerial:sqlite-jdbc:3.47.2.0'

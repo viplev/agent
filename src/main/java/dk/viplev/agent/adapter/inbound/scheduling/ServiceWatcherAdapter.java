@@ -76,7 +76,9 @@ public class ServiceWatcherAdapter {
 
     private void executeSyncSafely() {
         try {
+            log.info("Syncing services with VIPLEV");
             serviceDiscoveryUseCase.syncServices();
+            log.info("Service sync completed successfully");
         } catch (Exception e) {
             log.error("Failed to sync services", e);
         }
