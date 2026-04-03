@@ -1,0 +1,172 @@
+package dk.viplev.agent.adapter.outbound.container.docker;
+
+import com.github.dockerjava.api.DockerClient;
+import com.github.dockerjava.api.exception.DockerException;
+import com.github.dockerjava.api.exception.NotFoundException;
+import com.github.dockerjava.api.model.AccessMode;
+import com.github.dockerjava.api.model.Bind;
+import com.github.dockerjava.api.model.HostConfig;
+import com.github.dockerjava.api.model.Network;
+import com.github.dockerjava.api.model.Volume;
+import com.github.dockerjava.api.command.PullImageResultCallback;
+import dk.viplev.agent.domain.exception.ContainerRuntimeException;
+import jakarta.annotation.PreDestroy;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.annotation.Profile;
+import org.springframework.context.event.EventListener;
+import org.springframework.stereotype.Component;
+
+import java.util.Arrays;
+import java.util.List;
+
+@Slf4j
+@Component
+@Profile("docker")
+public class ExporterLifecycleManager {
+
+    static final String NETWORK_NAME = "viplev_agent";
+    static final String CADVISOR_CONTAINER_NAME = "viplev-cadvisor";
+    static final String NODE_EXPORTER_CONTAINER_NAME = "viplev-node-exporter";
+
+    private final DockerClient dockerClient;
+    private final String cadvisorImage;
+    private final String nodeExporterImage;
+
+    public ExporterLifecycleManager(
+            DockerClient dockerClient,
+            @Value("${agent.cadvisor-image}") String cadvisorImage,
+            @Value("${agent.node-exporter-image}") String nodeExporterImage) {
+        this.dockerClient = dockerClient;
+        this.cadvisorImage = cadvisorImage;
+        this.nodeExporterImage = nodeExporterImage;
+    }
+
+    @EventListener(ApplicationReadyEvent.class)
+    public void start() {
+        createNetworkIfAbsent();
+        pullImageIfAbsent(cadvisorImage);
+        startContainerIfAbsent(CADVISOR_CONTAINER_NAME, cadvisorImage, buildCadvisorHostConfig(), List.of());
+        pullImageIfAbsent(nodeExporterImage);
+        startContainerIfAbsent(NODE_EXPORTER_CONTAINER_NAME, nodeExporterImage, buildNodeExporterHostConfig(),
+                List.of("--path.procfs=/host/proc", "--path.sysfs=/host/sys", "--path.rootfs=/rootfs"));
+    }
+
+    @PreDestroy
+    public void stop() {
+        removeContainer(CADVISOR_CONTAINER_NAME);
+        removeContainer(NODE_EXPORTER_CONTAINER_NAME);
+        removeNetwork(NETWORK_NAME);
+    }
+
+    private void createNetworkIfAbsent() {
+        try {
+            dockerClient.createNetworkCmd()
+                    .withName(NETWORK_NAME)
+                    .withDriver("bridge")
+                    .exec();
+            log.info("Created Docker network '{}'", NETWORK_NAME);
+        } catch (DockerException e) {
+            if (e.getMessage() != null && e.getMessage().contains("already exists")) {
+                log.debug("Docker network '{}' already exists, skipping creation", NETWORK_NAME);
+            } else {
+                throw new ContainerRuntimeException("Failed to create Docker network " + NETWORK_NAME, e);
+            }
+        }
+    }
+
+    private void startContainerIfAbsent(String containerName, String image, HostConfig hostConfig, List<String> command) {
+        if (isContainerPresent(containerName)) {
+            log.info("Container '{}' already exists, skipping", containerName);
+            return;
+        }
+
+        var createCmd = dockerClient.createContainerCmd(image)
+                .withName(containerName)
+                .withHostConfig(hostConfig);
+
+        if (!command.isEmpty()) {
+            createCmd.withCmd(command);
+        }
+
+        String containerId = createCmd.exec().getId();
+        dockerClient.startContainerCmd(containerId).exec();
+        log.info("Started container '{}' with image '{}' (id: {})", containerName, image, containerId);
+    }
+
+    private void pullImageIfAbsent(String image) {
+        try {
+            dockerClient.inspectImageCmd(image).exec();
+            log.debug("Image '{}' already present locally", image);
+        } catch (NotFoundException e) {
+            log.info("Image '{}' not found locally, pulling...", image);
+            try {
+                dockerClient.pullImageCmd(image)
+                        .exec(new PullImageResultCallback())
+                        .awaitCompletion();
+                log.info("Pulled image '{}'", image);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                throw new ContainerRuntimeException("Interrupted while pulling image " + image, ie);
+            }
+        }
+    }
+
+    private boolean isContainerPresent(String containerName) {
+        return dockerClient.listContainersCmd()
+                .withNameFilter(List.of(containerName))
+                .withShowAll(true)
+                .exec()
+                .stream()
+                .flatMap(c -> Arrays.stream(c.getNames()))
+                .anyMatch(name -> name.equals("/" + containerName) || name.equals(containerName));
+    }
+
+    private void removeContainer(String containerName) {
+        try {
+            dockerClient.removeContainerCmd(containerName).withForce(true).exec();
+            log.info("Removed container '{}'", containerName);
+        } catch (Exception e) {
+            log.warn("Failed to remove container '{}': {}", containerName, e.getMessage());
+        }
+    }
+
+    private void removeNetwork(String networkName) {
+        try {
+            List<Network> networks = dockerClient.listNetworksCmd()
+                    .withNameFilter(networkName)
+                    .exec();
+            for (Network network : networks) {
+                if (networkName.equals(network.getName())) {
+                    dockerClient.removeNetworkCmd(network.getId()).exec();
+                    log.info("Removed Docker network '{}'", networkName);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Failed to remove Docker network '{}': {}", networkName, e.getMessage());
+        }
+    }
+
+    private HostConfig buildCadvisorHostConfig() {
+        return HostConfig.newHostConfig()
+                .withBinds(
+                        new Bind("/", new Volume("/rootfs"), AccessMode.ro),
+                        new Bind("/var/run", new Volume("/var/run"), AccessMode.ro),
+                        new Bind("/sys", new Volume("/sys"), AccessMode.ro),
+                        new Bind("/var/lib/docker", new Volume("/var/lib/docker"), AccessMode.ro)
+                )
+                .withNetworkMode(NETWORK_NAME)
+                .withPrivileged(true);
+    }
+
+    private HostConfig buildNodeExporterHostConfig() {
+        return HostConfig.newHostConfig()
+                .withBinds(
+                        new Bind("/proc", new Volume("/host/proc"), AccessMode.ro),
+                        new Bind("/sys", new Volume("/host/sys"), AccessMode.ro),
+                        new Bind("/", new Volume("/rootfs"), AccessMode.ro)
+                )
+                .withNetworkMode(NETWORK_NAME);
+    }
+}
