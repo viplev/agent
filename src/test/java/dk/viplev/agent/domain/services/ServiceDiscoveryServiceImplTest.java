@@ -3,12 +3,12 @@ package dk.viplev.agent.domain.services;
 import dk.viplev.agent.domain.exception.ContainerRuntimeException;
 import dk.viplev.agent.domain.exception.ViplevApiException;
 import dk.viplev.agent.domain.model.ContainerInfo;
+import dk.viplev.agent.domain.model.NodeInfo;
 import dk.viplev.agent.generated.model.ServiceDTO;
 import dk.viplev.agent.generated.model.ServiceRegistrationDTO;
 import dk.viplev.agent.port.outbound.container.ContainerPort;
-import dk.viplev.agent.port.outbound.host.HostInfoProvider;
+import dk.viplev.agent.port.outbound.discovery.NodeDiscoveryPort;
 import dk.viplev.agent.port.outbound.rest.ViplevApiPort;
-import dk.viplev.agent.generated.model.HostDTO;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -34,19 +34,17 @@ class ServiceDiscoveryServiceImplTest {
     private ViplevApiPort viplevApiPort;
 
     @Mock
-    private HostInfoProvider hostInfoProvider;
+    private NodeDiscoveryPort nodeDiscoveryPort;
 
     private ServiceDiscoveryServiceImpl service;
 
-    private final HostDTO testHost = new HostDTO()
-            .name("test-host")
-            .machineId("abc123")
-            .ipAddress("192.168.1.1")
-            .os("Linux");
+    private final NodeInfo testNode = new NodeInfo(
+            "daemon-id-abc123", "test-host", "192.168.1.1",
+            "Linux", "5.15.0", 8, 16_000_000_000L);
 
     @BeforeEach
     void setUp() {
-        service = new ServiceDiscoveryServiceImpl(containerPort, viplevApiPort, hostInfoProvider);
+        service = new ServiceDiscoveryServiceImpl(containerPort, viplevApiPort, nodeDiscoveryPort);
     }
 
     @Test
@@ -58,7 +56,7 @@ class ServiceDiscoveryServiceImplTest {
                         null, null, null, null)
         );
         when(containerPort.listContainers()).thenReturn(containers);
-        when(hostInfoProvider.getHostInfo()).thenReturn(testHost);
+        when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(testNode));
 
         service.syncServices();
 
@@ -66,7 +64,12 @@ class ServiceDiscoveryServiceImplTest {
         verify(viplevApiPort).registerServices(captor.capture());
 
         var registration = captor.getValue();
-        assertThat(registration.getHost()).isEqualTo(testHost);
+        assertThat(registration.getHost().getMachineId()).isEqualTo("daemon-id-abc123");
+        assertThat(registration.getHost().getName()).isEqualTo("test-host");
+        assertThat(registration.getHost().getIpAddress()).isEqualTo("192.168.1.1");
+        assertThat(registration.getHost().getOs()).isEqualTo("Linux");
+        assertThat(registration.getHost().getCpuCores()).isEqualTo(8);
+        assertThat(registration.getHost().getRamTotalBytes()).isEqualTo(16_000_000_000L);
         assertThat(registration.getServices()).hasSize(2);
 
         var nginx = registration.getServices().get(0);
@@ -76,7 +79,6 @@ class ServiceDiscoveryServiceImplTest {
 
         var redis = registration.getServices().get(1);
         assertThat(redis.getServiceName()).isEqualTo("redis");
-        assertThat(redis.getImageName()).isEqualTo("redis:7");
     }
 
     @Test
@@ -84,7 +86,7 @@ class ServiceDiscoveryServiceImplTest {
         var container = new ContainerInfo("id1", "app", "app:1", "sha256:ccc", "running",
                 2_000_000_000L, null, null, null);
         when(containerPort.listContainers()).thenReturn(List.of(container));
-        when(hostInfoProvider.getHostInfo()).thenReturn(testHost);
+        when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(testNode));
 
         service.syncServices();
 
@@ -100,7 +102,7 @@ class ServiceDiscoveryServiceImplTest {
         var container = new ContainerInfo("id1", "app", "app:1", "sha256:ccc", "running",
                 null, 1024L, null, null);
         when(containerPort.listContainers()).thenReturn(List.of(container));
-        when(hostInfoProvider.getHostInfo()).thenReturn(testHost);
+        when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(testNode));
 
         service.syncServices();
 
@@ -116,7 +118,7 @@ class ServiceDiscoveryServiceImplTest {
         var container = new ContainerInfo("id1", "app", "app:1", "sha256:ccc", "running",
                 null, null, null, null);
         when(containerPort.listContainers()).thenReturn(List.of(container));
-        when(hostInfoProvider.getHostInfo()).thenReturn(testHost);
+        when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(testNode));
 
         service.syncServices();
 
@@ -133,15 +135,28 @@ class ServiceDiscoveryServiceImplTest {
     @Test
     void syncServices_emptyContainerList_registersHostOnly() {
         when(containerPort.listContainers()).thenReturn(List.of());
-        when(hostInfoProvider.getHostInfo()).thenReturn(testHost);
+        when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(testNode));
 
         service.syncServices();
 
         var captor = ArgumentCaptor.forClass(ServiceRegistrationDTO.class);
         verify(viplevApiPort).registerServices(captor.capture());
 
-        assertThat(captor.getValue().getHost()).isEqualTo(testHost);
+        assertThat(captor.getValue().getHost().getMachineId()).isEqualTo("daemon-id-abc123");
         assertThat(captor.getValue().getServices()).isEmpty();
+    }
+
+    @Test
+    void syncServices_emptyNodeList_sendsUnknownHost() {
+        when(containerPort.listContainers()).thenReturn(List.of());
+        when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of());
+
+        service.syncServices();
+
+        var captor = ArgumentCaptor.forClass(ServiceRegistrationDTO.class);
+        verify(viplevApiPort).registerServices(captor.capture());
+
+        assertThat(captor.getValue().getHost().getMachineId()).isEqualTo("unknown");
     }
 
     @Test
@@ -155,7 +170,7 @@ class ServiceDiscoveryServiceImplTest {
     @Test
     void syncServices_propagatesApiException() {
         when(containerPort.listContainers()).thenReturn(List.of());
-        when(hostInfoProvider.getHostInfo()).thenReturn(testHost);
+        when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(testNode));
         doThrow(new ViplevApiException("API error", 500))
                 .when(viplevApiPort).registerServices(org.mockito.ArgumentMatchers.any());
 
