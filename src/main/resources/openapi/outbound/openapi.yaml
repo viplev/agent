@@ -1473,6 +1473,16 @@ components:
     ServiceRegistrationDTO:
       type: object
       required:
+        - hosts
+      properties:
+        hosts:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceRegistrationHostDTO'
+
+    ServiceRegistrationHostDTO:
+      type: object
+      required:
         - host
         - services
       properties:
@@ -1559,11 +1569,10 @@ components:
           format: double
           description: Block I/O bytes written
 
-    MetricResourceHostDTO:
+    MetricResourceNodeDTO:
       type: object
       required:
         - machineId
-        - metrics
       properties:
         machineId:
           type: string
@@ -1572,6 +1581,10 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/MetricDataPointDTO'
+        services:
+          type: array
+          items:
+            $ref: '#/components/schemas/MetricResourceServiceDTO'
 
     MetricResourceServiceDTO:
       type: object
@@ -1676,14 +1689,12 @@ components:
       type: object
       description: Wrapper for resource metrics sent by the agent
       required:
-        - host
+        - hosts
       properties:
-        host:
-          $ref: '#/components/schemas/MetricResourceHostDTO'
-        services:
+        hosts:
           type: array
           items:
-            $ref: '#/components/schemas/MetricResourceServiceDTO'
+            $ref: '#/components/schemas/MetricResourceNodeDTO'
 
     MetricPerformanceDTO:
       type: object

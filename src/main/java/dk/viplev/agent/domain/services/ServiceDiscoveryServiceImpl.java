@@ -5,6 +5,7 @@ import dk.viplev.agent.domain.model.NodeInfo;
 import dk.viplev.agent.generated.model.HostDTO;
 import dk.viplev.agent.generated.model.ServiceDTO;
 import dk.viplev.agent.generated.model.ServiceRegistrationDTO;
+import dk.viplev.agent.generated.model.ServiceRegistrationHostDTO;
 import dk.viplev.agent.port.inbound.ServiceDiscoveryUseCase;
 import dk.viplev.agent.port.outbound.container.ContainerPort;
 import dk.viplev.agent.port.outbound.discovery.NodeDiscoveryPort;
@@ -38,28 +39,18 @@ public class ServiceDiscoveryServiceImpl implements ServiceDiscoveryUseCase {
     @Override
     public void syncServices() {
         var containers = containerPort.listContainers();
-        List<NodeInfo> nodes = nodeDiscoveryPort.discoverNodes();
-        var host = toHostDto(nodes.isEmpty() ? null : nodes.getFirst());
-        var services = containers.stream()
-                .map(this::toServiceDTO)
+        var services = containers.stream().map(this::toServiceDTO).toList();
+        var hosts = nodeDiscoveryPort.discoverNodes().stream()
+                .map(node -> new ServiceRegistrationHostDTO()
+                        .host(toHostDto(node))
+                        .services(services))
                 .toList();
 
-        var registration = new ServiceRegistrationDTO()
-                .host(host)
-                .services(services);
-
-        viplevApiPort.registerServices(registration);
-        log.info("Registered {} services with VIPLEV", services.size());
+        viplevApiPort.registerServices(new ServiceRegistrationDTO().hosts(hosts));
+        log.info("Registered {} services on {} host(s) with VIPLEV", services.size(), hosts.size());
     }
 
     private HostDTO toHostDto(NodeInfo node) {
-        if (node == null) {
-            return new HostDTO()
-                    .name("unknown")
-                    .machineId("unknown")
-                    .ipAddress("0.0.0.0")
-                    .os("unknown");
-        }
         return new HostDTO()
                 .name(node.hostname())
                 .machineId(node.machineId())
