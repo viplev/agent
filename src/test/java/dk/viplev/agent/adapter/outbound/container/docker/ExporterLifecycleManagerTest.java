@@ -1,6 +1,7 @@
 package dk.viplev.agent.adapter.outbound.container.docker;
 
 import com.github.dockerjava.api.DockerClient;
+import com.github.dockerjava.api.command.ConnectToNetworkCmd;
 import com.github.dockerjava.api.command.CreateContainerCmd;
 import com.github.dockerjava.api.command.CreateContainerResponse;
 import com.github.dockerjava.api.command.CreateNetworkCmd;
@@ -24,6 +25,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
@@ -31,6 +33,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -43,7 +46,12 @@ class ExporterLifecycleManagerTest {
     @Mock
     private DockerClient dockerClient;
 
-    private ExporterLifecycleManager manager;
+    @Spy
+    private ExporterLifecycleManager manager = new ExporterLifecycleManager(
+            null, // replaced by @Spy field injection via setter — handled in setUp
+            "gcr.io/cadvisor/cadvisor:v0.51.0",
+            "prom/node-exporter:v1.9.0"
+    );
 
     @BeforeEach
     void setUp() {
@@ -52,11 +60,17 @@ class ExporterLifecycleManagerTest {
                 "gcr.io/cadvisor/cadvisor:v0.51.0",
                 "prom/node-exporter:v1.9.0"
         );
+        // Spy on the manager to stub readSelfContainerId without file I/O
+        manager = org.mockito.Mockito.spy(manager);
+        lenient().doReturn("test-agent-container-id").when(manager).readSelfContainerId();
     }
 
     @Test
-    void startup_createsNetworkAndStartsContainers() {
-        mockNetworkCreation();
+    void startup_createsNetworkConnectsAgentAndStartsContainers() {
+        var networkResponse = mock(CreateNetworkResponse.class);
+        when(networkResponse.getId()).thenReturn("net-id");
+        mockNetworkCreation(networkResponse);
+        mockConnectToNetwork();
         mockImagesPresent();
         mockEmptyContainerList();
         mockContainerCreationAndStart("cadvisor-id", "node-exporter-id");
@@ -64,6 +78,7 @@ class ExporterLifecycleManagerTest {
         manager.start();
 
         verify(dockerClient).createNetworkCmd();
+        verify(dockerClient).connectToNetworkCmd();
         verify(dockerClient).createContainerCmd("gcr.io/cadvisor/cadvisor:v0.51.0");
         verify(dockerClient).createContainerCmd("prom/node-exporter:v1.9.0");
         verify(dockerClient).startContainerCmd("cadvisor-id");
@@ -72,7 +87,10 @@ class ExporterLifecycleManagerTest {
 
     @Test
     void startup_pullsImageIfNotPresentLocally() throws InterruptedException {
-        mockNetworkCreation();
+        var networkResponse = mock(CreateNetworkResponse.class);
+        when(networkResponse.getId()).thenReturn("net-id");
+        mockNetworkCreation(networkResponse);
+        mockConnectToNetwork();
         mockEmptyContainerList();
 
         var inspectCmd = mock(InspectImageCmd.class);
@@ -95,7 +113,10 @@ class ExporterLifecycleManagerTest {
 
     @Test
     void startup_skipsContainerIfAlreadyPresent() {
-        mockNetworkCreation();
+        var networkResponse = mock(CreateNetworkResponse.class);
+        when(networkResponse.getId()).thenReturn("net-id");
+        mockNetworkCreation(networkResponse);
+        mockConnectToNetwork();
         mockImagesPresent();
 
         var existingCadvisor = mock(Container.class);
@@ -126,11 +147,20 @@ class ExporterLifecycleManagerTest {
         when(createNetworkCmd.exec()).thenThrow(new DockerException(
                 "network with name viplev_agent already exists", 409));
 
+        // Must also stub listNetworksCmd used in findNetworkId fallback
+        var network = mock(Network.class);
+        when(network.getName()).thenReturn(ExporterLifecycleManager.NETWORK_NAME);
+        when(network.getId()).thenReturn("existing-net-id");
+        var listNetworksCmd = mock(ListNetworksCmd.class);
+        when(dockerClient.listNetworksCmd()).thenReturn(listNetworksCmd);
+        when(listNetworksCmd.withNameFilter(anyString())).thenReturn(listNetworksCmd);
+        when(listNetworksCmd.exec()).thenReturn(List.of(network));
+
+        mockConnectToNetwork();
         mockImagesPresent();
         mockEmptyContainerList();
         mockContainerCreationAndStart("cadvisor-id", "node-exporter-id");
 
-        // Should not throw
         manager.start();
 
         verify(dockerClient).createContainerCmd("gcr.io/cadvisor/cadvisor:v0.51.0");
@@ -187,7 +217,6 @@ class ExporterLifecycleManagerTest {
         when(listNetworksCmd.withNameFilter(anyString())).thenReturn(listNetworksCmd);
         when(listNetworksCmd.exec()).thenReturn(List.of());
 
-        // Should not throw — cleanup errors are logged and swallowed
         manager.stop();
 
         verify(dockerClient).removeContainerCmd(ExporterLifecycleManager.CADVISOR_CONTAINER_NAME);
@@ -196,12 +225,19 @@ class ExporterLifecycleManagerTest {
 
     // -- Helpers --
 
-    private void mockNetworkCreation() {
+    private void mockNetworkCreation(CreateNetworkResponse response) {
         var createNetworkCmd = mock(CreateNetworkCmd.class);
         when(dockerClient.createNetworkCmd()).thenReturn(createNetworkCmd);
         when(createNetworkCmd.withName(anyString())).thenReturn(createNetworkCmd);
         when(createNetworkCmd.withDriver(anyString())).thenReturn(createNetworkCmd);
-        when(createNetworkCmd.exec()).thenReturn(mock(CreateNetworkResponse.class));
+        when(createNetworkCmd.exec()).thenReturn(response);
+    }
+
+    private void mockConnectToNetwork() {
+        var connectCmd = mock(ConnectToNetworkCmd.class);
+        when(dockerClient.connectToNetworkCmd()).thenReturn(connectCmd);
+        when(connectCmd.withNetworkId(anyString())).thenReturn(connectCmd);
+        when(connectCmd.withContainerId(anyString())).thenReturn(connectCmd);
     }
 
     private void mockImagesPresent() {

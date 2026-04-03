@@ -1,6 +1,7 @@
 package dk.viplev.agent.adapter.outbound.container.docker;
 
 import com.github.dockerjava.api.DockerClient;
+import com.github.dockerjava.api.command.PullImageResultCallback;
 import com.github.dockerjava.api.exception.DockerException;
 import com.github.dockerjava.api.exception.NotFoundException;
 import com.github.dockerjava.api.model.AccessMode;
@@ -8,7 +9,6 @@ import com.github.dockerjava.api.model.Bind;
 import com.github.dockerjava.api.model.HostConfig;
 import com.github.dockerjava.api.model.Network;
 import com.github.dockerjava.api.model.Volume;
-import com.github.dockerjava.api.command.PullImageResultCallback;
 import dk.viplev.agent.domain.exception.ContainerRuntimeException;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
@@ -18,6 +18,9 @@ import org.springframework.context.annotation.Profile;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
 
@@ -45,7 +48,8 @@ public class ExporterLifecycleManager {
 
     @EventListener(ApplicationReadyEvent.class)
     public void start() {
-        createNetworkIfAbsent();
+        String networkId = ensureNetworkExists();
+        connectAgentToNetwork(networkId);
         pullImageIfAbsent(cadvisorImage);
         startContainerIfAbsent(CADVISOR_CONTAINER_NAME, cadvisorImage, buildCadvisorHostConfig(), List.of());
         pullImageIfAbsent(nodeExporterImage);
@@ -60,19 +64,56 @@ public class ExporterLifecycleManager {
         removeNetwork(NETWORK_NAME);
     }
 
-    private void createNetworkIfAbsent() {
+    private String ensureNetworkExists() {
         try {
-            dockerClient.createNetworkCmd()
+            var response = dockerClient.createNetworkCmd()
                     .withName(NETWORK_NAME)
                     .withDriver("bridge")
                     .exec();
             log.info("Created Docker network '{}'", NETWORK_NAME);
+            return response.getId();
         } catch (DockerException e) {
             if (e.getMessage() != null && e.getMessage().contains("already exists")) {
-                log.debug("Docker network '{}' already exists, skipping creation", NETWORK_NAME);
-            } else {
-                throw new ContainerRuntimeException("Failed to create Docker network " + NETWORK_NAME, e);
+                log.debug("Docker network '{}' already exists", NETWORK_NAME);
+                return findNetworkId(NETWORK_NAME);
             }
+            throw new ContainerRuntimeException("Failed to create Docker network " + NETWORK_NAME, e);
+        }
+    }
+
+    private String findNetworkId(String networkName) {
+        return dockerClient.listNetworksCmd()
+                .withNameFilter(networkName)
+                .exec()
+                .stream()
+                .filter(n -> networkName.equals(n.getName()))
+                .map(Network::getId)
+                .findFirst()
+                .orElseThrow(() -> new ContainerRuntimeException("Network '" + networkName + "' not found after creation"));
+    }
+
+    private void connectAgentToNetwork(String networkId) {
+        try {
+            String containerId = readSelfContainerId();
+            dockerClient.connectToNetworkCmd()
+                    .withNetworkId(networkId)
+                    .withContainerId(containerId)
+                    .exec();
+            log.info("Connected agent container to network '{}'", NETWORK_NAME);
+        } catch (DockerException e) {
+            if (e.getMessage() != null && e.getMessage().contains("already exists")) {
+                log.debug("Agent container already connected to network '{}'", NETWORK_NAME);
+            } else {
+                log.warn("Failed to connect agent container to network '{}': {}", NETWORK_NAME, e.getMessage());
+            }
+        }
+    }
+
+    String readSelfContainerId() {
+        try {
+            return Files.readString(Path.of("/etc/hostname")).trim();
+        } catch (IOException e) {
+            throw new ContainerRuntimeException("Failed to read agent container ID from /etc/hostname", e);
         }
     }
 
