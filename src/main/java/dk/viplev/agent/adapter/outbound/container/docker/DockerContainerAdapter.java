@@ -18,7 +18,6 @@ import dk.viplev.agent.domain.model.ContainerEvent;
 import dk.viplev.agent.domain.model.ContainerInfo;
 import dk.viplev.agent.domain.model.ContainerStartRequest;
 import dk.viplev.agent.domain.model.ContainerStats;
-import dk.viplev.agent.domain.model.HostStats;
 import dk.viplev.agent.port.outbound.container.ContainerPort;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Profile;
@@ -40,15 +39,12 @@ import java.util.function.Consumer;
 public class DockerContainerAdapter implements ContainerPort, Closeable {
 
     private final DockerClient dockerClient;
-    private final ProcFileReader procFileReader;
 
     private final ConcurrentHashMap<String, CpuReading> previousCpuReadings = new ConcurrentHashMap<>();
-    private volatile HostCpuReading previousHostCpuReading;
     private volatile Closeable eventStream;
 
-    public DockerContainerAdapter(DockerClient dockerClient, ProcFileReader procFileReader) {
+    public DockerContainerAdapter(DockerClient dockerClient) {
         this.dockerClient = dockerClient;
-        this.procFileReader = procFileReader;
     }
 
     @Override
@@ -66,34 +62,6 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
         return execute("get container stats for " + containerId, () -> {
             Statistics statistics = fetchStatistics(containerId);
             return toContainerStats(containerId, statistics);
-        });
-    }
-
-    @Override
-    public HostStats getHostStats() {
-        return execute("get host stats", () -> {
-            double cpuPercentage = calculateHostCpuPercentage();
-
-            String meminfo = procFileReader.readMeminfo();
-            long memTotal = parseMeminfoField(meminfo, "MemTotal");
-            long memAvailable = parseMeminfoField(meminfo, "MemAvailable");
-            long memUsage = memTotal - memAvailable;
-
-            String netDev = procFileReader.readNetDev();
-            long[] networkStats = parseNetDev(netDev);
-
-            String diskstats = procFileReader.readDiskstats();
-            long[] blockStats = parseDiskstats(diskstats);
-
-            return new HostStats(
-                    cpuPercentage,
-                    memUsage,
-                    memTotal,
-                    networkStats[0],
-                    networkStats[1],
-                    blockStats[0],
-                    blockStats[1]
-            );
         });
     }
 
@@ -352,107 +320,6 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
         return ((double) cpuDelta / systemDelta) * numCpus * 100.0;
     }
 
-    // -- Host stats from /proc --
-
-    private double calculateHostCpuPercentage() {
-        String stat = procFileReader.readStat();
-        String firstLine = stat.lines().findFirst()
-                .orElseThrow(() -> new ContainerRuntimeException("Empty /proc/stat"));
-
-        long[] cpuValues = parseCpuLine(firstLine);
-        if (cpuValues.length < 5) {
-            throw new ContainerRuntimeException(
-                    "Malformed /proc/stat CPU line: expected at least 5 fields but got " + cpuValues.length);
-        }
-        long idle = cpuValues[3] + cpuValues[4]; // idle + iowait
-        long total = 0;
-        for (long v : cpuValues) {
-            total += v;
-        }
-
-        HostCpuReading current = new HostCpuReading(total, idle);
-        HostCpuReading previous = previousHostCpuReading;
-        previousHostCpuReading = current;
-
-        if (previous == null) {
-            return 0.0;
-        }
-
-        long totalDelta = current.total() - previous.total();
-        long idleDelta = current.idle() - previous.idle();
-
-        if (totalDelta <= 0) {
-            return 0.0;
-        }
-
-        return ((double) (totalDelta - idleDelta) / totalDelta) * 100.0;
-    }
-
-    long[] parseCpuLine(String cpuLine) {
-        // Format: "cpu  user nice system idle iowait irq softirq steal guest guest_nice"
-        String[] parts = cpuLine.trim().split("\\s+");
-        long[] values = new long[parts.length - 1];
-        for (int i = 1; i < parts.length; i++) {
-            values[i - 1] = Long.parseLong(parts[i]);
-        }
-        return values;
-    }
-
-    long parseMeminfoField(String meminfo, String field) {
-        // Format: "FieldName:      1234 kB"
-        return meminfo.lines()
-                .filter(line -> line.startsWith(field + ":"))
-                .findFirst()
-                .map(line -> {
-                    String[] parts = line.trim().split("\\s+");
-                    long valueKb = Long.parseLong(parts[1]);
-                    return valueKb * 1024; // convert kB to bytes
-                })
-                .orElseThrow(() -> new ContainerRuntimeException(
-                        "Field '" + field + "' not found in /proc/meminfo"));
-    }
-
-    long[] parseNetDev(String netDev) {
-        // Format: "  iface: rxbytes rxpackets ... txbytes txpackets ..."
-        // Skip header lines (first 2), skip loopback
-        long rxTotal = 0;
-        long txTotal = 0;
-        int lineNum = 0;
-        for (String line : netDev.split("\n")) {
-            lineNum++;
-            if (lineNum <= 2) continue; // skip headers
-            String trimmed = line.trim();
-            if (trimmed.startsWith("lo:")) continue;
-            String[] parts = trimmed.split("[:\\s]+");
-            if (parts.length >= 10) {
-                rxTotal += Long.parseLong(parts[1]);
-                txTotal += Long.parseLong(parts[9]);
-            }
-        }
-        return new long[]{rxTotal, txTotal};
-    }
-
-    long[] parseDiskstats(String diskstats) {
-        // Format: "major minor name reads ... read_sectors ... writes ... write_sectors ..."
-        // Fields: [0]=major [1]=minor [2]=name [3]=reads_completed [4]=reads_merged
-        //         [5]=sectors_read [6]=ms_reading [7]=writes_completed [8]=writes_merged
-        //         [9]=sectors_written [10]=ms_writing ...
-        // Sector size = 512 bytes
-        long readBytes = 0;
-        long writeBytes = 0;
-        for (String line : diskstats.split("\n")) {
-            String[] parts = line.trim().split("\\s+");
-            if (parts.length < 11) continue;
-            // Only count whole-disk devices (skip partitions like sda1, nvme0n1p1, mmcblk0p1)
-            String name = parts[2];
-            if (name.matches(".*\\d$") && !name.matches("^(nvme|mmcblk).*")) continue;
-            if (name.matches("^nvme.*p\\d+$") || name.matches("^mmcblk.*p\\d+$")) continue;
-            readBytes += Long.parseLong(parts[5]) * 512;
-            writeBytes += Long.parseLong(parts[9]) * 512;
-        }
-        return new long[]{readBytes, writeBytes};
-    }
-
     // -- Event mapping --
 
     private static ContainerEvent.EventType mapEventAction(String action) {
@@ -493,6 +360,4 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
     }
 
     record CpuReading(long totalCpuNanos, long systemCpuNanos) {}
-
-    record HostCpuReading(long total, long idle) {}
 }
