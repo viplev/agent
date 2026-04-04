@@ -31,7 +31,11 @@ class PrometheusMetricsParser {
                     if (spaceIdx >= 0) {
                         valueStr = valueStr.substring(0, spaceIdx);
                     }
-                    return Double.parseDouble(valueStr);
+                    try {
+                        return Double.parseDouble(valueStr);
+                    } catch (NumberFormatException e) {
+                        return 0.0;
+                    }
                 })
                 .orElse(0.0);
     }
@@ -58,7 +62,11 @@ class PrometheusMetricsParser {
                     if (spaceIdx >= 0) {
                         valueStr = valueStr.substring(0, spaceIdx);
                     }
-                    result.put(labels, Double.parseDouble(valueStr));
+                    try {
+                        result.put(labels, Double.parseDouble(valueStr));
+                    } catch (NumberFormatException e) {
+                        // skip malformed values (e.g. +Inf, NaN, empty)
+                    }
                 });
         return result;
     }

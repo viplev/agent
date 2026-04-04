@@ -82,19 +82,27 @@ public class DockerNodeDiscoveryAdapter implements NodeDiscoveryPort {
 
     @Override
     public String getLocalNodeId() {
-        var info = dockerClient.infoCmd().exec();
-        LocalNodeState localNodeState = info.getSwarm() != null
-                ? info.getSwarm().getLocalNodeState()
-                : null;
-        if (LocalNodeState.ACTIVE == localNodeState) {
-            return info.getSwarm().getNodeID();
+        try {
+            var info = dockerClient.infoCmd().exec();
+            LocalNodeState localNodeState = info.getSwarm() != null
+                    ? info.getSwarm().getLocalNodeState()
+                    : null;
+            if (LocalNodeState.ACTIVE == localNodeState) {
+                return info.getSwarm().getNodeID();
+            }
+            return info.getId();
+        } catch (DockerException e) {
+            throw new ContainerRuntimeException("Failed to get local node ID via Docker API: " + e.getMessage(), e);
         }
-        return info.getId();
     }
 
     String resolveLocalIpAddress() {
         try {
-            for (NetworkInterface iface : Collections.list(NetworkInterface.getNetworkInterfaces())) {
+            var networkInterfaces = NetworkInterface.getNetworkInterfaces();
+            if (networkInterfaces == null) {
+                return "127.0.0.1";
+            }
+            for (NetworkInterface iface : Collections.list(networkInterfaces)) {
                 if (iface.isLoopback() || !iface.isUp()) continue;
                 for (InetAddress addr : Collections.list(iface.getInetAddresses())) {
                     if (addr.isLoopbackAddress() || addr.isLinkLocalAddress()) continue;

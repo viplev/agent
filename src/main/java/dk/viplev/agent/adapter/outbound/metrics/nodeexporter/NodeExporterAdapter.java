@@ -36,8 +36,16 @@ public class NodeExporterAdapter implements NodeExporterPort {
 
         double memTotal = parser.parseGaugeValue(metricsText, "node_memory_MemTotal_bytes");
         double memAvailable = parser.parseGaugeValue(metricsText, "node_memory_MemAvailable_bytes");
-        long memoryUsage = (long) (memTotal - memAvailable);
-        long memoryLimit = (long) memTotal;
+        long memoryUsage;
+        long memoryLimit;
+        if (memTotal <= 0 || memAvailable < 0) {
+            log.warn("Incomplete or invalid memory metrics from node_exporter at {}: memTotal={}, memAvailable={}", baseUrl, memTotal, memAvailable);
+            memoryUsage = 0L;
+            memoryLimit = 0L;
+        } else {
+            memoryLimit = (long) memTotal;
+            memoryUsage = Math.max(0L, (long) (memTotal - memAvailable));
+        }
 
         long networkIn = sumDeviceMetric(metricsText, "node_network_receive_bytes_total", "lo");
         long networkOut = sumDeviceMetric(metricsText, "node_network_transmit_bytes_total", "lo");

@@ -11,6 +11,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -92,8 +93,7 @@ public class CadvisorAdapter implements CadvisorPort {
         }
 
         long cpuDelta = last.cpu().usage().total() - first.cpu().usage().total();
-        long timeDelta = last.timestamp().toEpochMilli() - first.timestamp().toEpochMilli();
-        long timeDeltaNanos = timeDelta * 1_000_000L;
+        long timeDeltaNanos = Duration.between(first.timestamp(), last.timestamp()).toNanos();
 
         if (timeDeltaNanos <= 0 || cpuDelta < 0) {
             return 0.0;
