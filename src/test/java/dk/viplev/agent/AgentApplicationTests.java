@@ -1,6 +1,7 @@
 package dk.viplev.agent;
 
 import dk.viplev.agent.port.outbound.container.ContainerPort;
+import dk.viplev.agent.port.outbound.discovery.NodeDiscoveryPort;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
@@ -12,6 +13,9 @@ class AgentApplicationTests {
 
 	@MockitoBean
 	private ContainerPort containerPort;
+
+	@MockitoBean
+	private NodeDiscoveryPort nodeDiscoveryPort;
 
 	@Test
 	void contextLoads() {

@@ -1,15 +1,20 @@
 package dk.viplev.agent.domain.services;
 
 import dk.viplev.agent.domain.model.ContainerInfo;
+import dk.viplev.agent.domain.model.NodeInfo;
+import dk.viplev.agent.generated.model.HostDTO;
 import dk.viplev.agent.generated.model.ServiceDTO;
 import dk.viplev.agent.generated.model.ServiceRegistrationDTO;
+import dk.viplev.agent.generated.model.ServiceRegistrationHostDTO;
 import dk.viplev.agent.port.inbound.ServiceDiscoveryUseCase;
 import dk.viplev.agent.port.outbound.container.ContainerPort;
-import dk.viplev.agent.port.outbound.host.HostInfoProvider;
+import dk.viplev.agent.port.outbound.discovery.NodeDiscoveryPort;
 import dk.viplev.agent.port.outbound.rest.ViplevApiPort;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+
+import java.util.List;
 
 @Service
 public class ServiceDiscoveryServiceImpl implements ServiceDiscoveryUseCase {
@@ -21,30 +26,41 @@ public class ServiceDiscoveryServiceImpl implements ServiceDiscoveryUseCase {
 
     private final ContainerPort containerPort;
     private final ViplevApiPort viplevApiPort;
-    private final HostInfoProvider hostInfoProvider;
+    private final NodeDiscoveryPort nodeDiscoveryPort;
 
     public ServiceDiscoveryServiceImpl(ContainerPort containerPort,
                                        ViplevApiPort viplevApiPort,
-                                       HostInfoProvider hostInfoProvider) {
+                                       NodeDiscoveryPort nodeDiscoveryPort) {
         this.containerPort = containerPort;
         this.viplevApiPort = viplevApiPort;
-        this.hostInfoProvider = hostInfoProvider;
+        this.nodeDiscoveryPort = nodeDiscoveryPort;
     }
 
     @Override
     public void syncServices() {
         var containers = containerPort.listContainers();
-        var host = hostInfoProvider.getHostInfo();
-        var services = containers.stream()
-                .map(this::toServiceDTO)
+        var services = containers.stream().map(this::toServiceDTO).toList();
+        var localNodeId = nodeDiscoveryPort.getLocalNodeId();
+        var hosts = nodeDiscoveryPort.discoverNodes().stream()
+                .map(node -> new ServiceRegistrationHostDTO()
+                        .host(toHostDto(node))
+                        .services(node.machineId().equals(localNodeId) ? services : List.of()))
                 .toList();
 
-        var registration = new ServiceRegistrationDTO()
-                .host(host)
-                .services(services);
+        viplevApiPort.registerServices(new ServiceRegistrationDTO().hosts(hosts));
+        log.info("Registered {} services on local node, {} host(s) total with VIPLEV", services.size(), hosts.size());
+    }
 
-        viplevApiPort.registerServices(registration);
-        log.info("Registered {} services with VIPLEV", services.size());
+    private HostDTO toHostDto(NodeInfo node) {
+        return new HostDTO()
+                .name(node.hostname())
+                .machineId(node.machineId())
+                .ipAddress(node.ipAddress())
+                .os(node.os())
+                .osVersion(node.osVersion())
+                .cpuCores(null) // physical core count not available from Docker API; optional field
+                .cpuThreads(node.logicalCpuCount())
+                .ramTotalBytes(node.ramTotalBytes());
     }
 
     private ServiceDTO toServiceDTO(ContainerInfo container) {

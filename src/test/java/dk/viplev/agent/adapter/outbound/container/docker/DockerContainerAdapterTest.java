@@ -55,14 +55,11 @@ class DockerContainerAdapterTest {
     @Mock
     private DockerClient dockerClient;
 
-    @Mock
-    private ProcFileReader procFileReader;
-
     private DockerContainerAdapter adapter;
 
     @BeforeEach
     void setUp() {
-        adapter = new DockerContainerAdapter(dockerClient, procFileReader);
+        adapter = new DockerContainerAdapter(dockerClient);
     }
 
     @Test
@@ -290,47 +287,6 @@ class DockerContainerAdapterTest {
         assertThatThrownBy(() -> adapter.listContainers())
                 .isInstanceOf(ContainerRuntimeException.class)
                 .hasMessageContaining("Failed to list containers");
-    }
-
-    @Test
-    void getHostStats_firstCallReturnsZeroCpu() {
-        when(procFileReader.readStat()).thenReturn(
-                "cpu  100 0 50 800 10 0 0 0 0 0\n");
-        when(procFileReader.readMeminfo()).thenReturn(
-                "MemTotal:       16384000 kB\nMemAvailable:    8192000 kB\n");
-        when(procFileReader.readNetDev()).thenReturn(
-                "Inter-|   Receive\n face |bytes\n  eth0: 1000 0 0 0 0 0 0 0 2000 0 0 0 0 0 0 0\n");
-        when(procFileReader.readDiskstats()).thenReturn(
-                "   8       0 sda 100 0 200 0 50 0 100 0 0 0 0 0 0 0 0 0 0\n");
-
-        var stats = adapter.getHostStats();
-
-        assertThat(stats.cpuPercentage()).isEqualTo(0.0);
-        assertThat(stats.memoryUsageBytes()).isEqualTo((16384000L - 8192000L) * 1024);
-        assertThat(stats.memoryLimitBytes()).isEqualTo(16384000L * 1024);
-        assertThat(stats.networkInBytes()).isEqualTo(1000L);
-        assertThat(stats.networkOutBytes()).isEqualTo(2000L);
-    }
-
-    @Test
-    void getHostStats_calculatesCorrectCpuPercentage() {
-        // First call: baseline
-        when(procFileReader.readStat()).thenReturn(
-                "cpu  100 0 50 800 10 0 0 0 0 0\n");
-        when(procFileReader.readMeminfo()).thenReturn(
-                "MemTotal:       16384000 kB\nMemAvailable:    8192000 kB\n");
-        when(procFileReader.readNetDev()).thenReturn(
-                "Inter-|   Receive\n face |bytes\n  eth0: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n");
-        when(procFileReader.readDiskstats()).thenReturn("");
-        adapter.getHostStats();
-
-        // Second call: total goes from 960 to 1210 (+250), idle from 810 to 910 (+100)
-        // CPU% = (250 - 100) / 250 * 100 = 60%
-        when(procFileReader.readStat()).thenReturn(
-                "cpu  200 0 100 900 10 0 0 0 0 0\n");
-        var stats = adapter.getHostStats();
-
-        assertThat(stats.cpuPercentage()).isCloseTo(60.0, within(0.01));
     }
 
     // -- Helper methods --
