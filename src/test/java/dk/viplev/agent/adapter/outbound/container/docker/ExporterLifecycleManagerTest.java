@@ -390,7 +390,7 @@ class ExporterLifecycleManagerTest {
         assertThat(specs.get(0).getMode().getGlobal()).isNotNull();
         assertThat(specs.get(1).getMode().getGlobal()).isNotNull();
         assertThat(specs.get(0).getTaskTemplate().getNetworks().get(0).getTarget())
-                .isEqualTo(ExporterLifecycleManager.NETWORK_NAME);
+                .isEqualTo("net-id");
     }
 
     @Test

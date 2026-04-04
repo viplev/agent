@@ -69,9 +69,9 @@ public class DockerNodeDiscoveryAdapter implements NodeDiscoveryPort {
         var status = node.getStatus();
 
         String machineId = node.getId();
-        String hostname = description != null ? description.getHostname() : "";
-        String ipAddress = status != null && status.getAddress() != null ? status.getAddress() : "";
-        String os = platform != null ? platform.getOs() : "";
+        String hostname = description != null && description.getHostname() != null ? description.getHostname() : "unknown";
+        String ipAddress = status != null && status.getAddress() != null ? status.getAddress() : "unknown";
+        String os = platform != null && platform.getOs() != null ? platform.getOs() : "unknown";
         int cpuCores = resources != null && resources.getNanoCPUs() != null
                 ? (int) (resources.getNanoCPUs() / 1_000_000_000L) : 0;
         long ramTotalBytes = resources != null && resources.getMemoryBytes() != null

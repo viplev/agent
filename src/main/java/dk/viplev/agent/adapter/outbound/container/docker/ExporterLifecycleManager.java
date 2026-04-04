@@ -64,10 +64,10 @@ public class ExporterLifecycleManager {
         if (swarm) {
             connectAgentToNetwork(networkId);
             startSwarmServiceIfAbsent(CADVISOR_CONTAINER_NAME, cadvisorImage,
-                    buildCadvisorMounts(), List.of());
+                    buildCadvisorMounts(), List.of(), networkId);
             startSwarmServiceIfAbsent(NODE_EXPORTER_CONTAINER_NAME, nodeExporterImage,
                     buildNodeExporterMounts(),
-                    List.of("--path.procfs=/host/proc", "--path.sysfs=/host/sys", "--path.rootfs=/rootfs"));
+                    List.of("--path.procfs=/host/proc", "--path.sysfs=/host/sys", "--path.rootfs=/rootfs"), networkId);
         } else {
             connectAgentToNetwork(networkId);
             pullImageIfAbsent(cadvisorImage);
@@ -264,7 +264,7 @@ public class ExporterLifecycleManager {
         }
     }
 
-    private void startSwarmServiceIfAbsent(String serviceName, String image, List<Mount> mounts, List<String> args) {
+    private void startSwarmServiceIfAbsent(String serviceName, String image, List<Mount> mounts, List<String> args, String networkId) {
         if (isSwarmServicePresent(serviceName)) {
             log.info("Swarm service '{}' already exists, skipping", serviceName);
             return;
@@ -279,7 +279,7 @@ public class ExporterLifecycleManager {
         // bind mounts alone for most metrics; some advanced disk I/O stats may be unavailable.
         var taskSpec = new TaskSpec()
                 .withContainerSpec(containerSpec)
-                .withNetworks(List.of(new NetworkAttachmentConfig().withTarget(NETWORK_NAME)));
+                .withNetworks(List.of(new NetworkAttachmentConfig().withTarget(networkId)));
 
         var serviceSpec = new ServiceSpec()
                 .withName(serviceName)

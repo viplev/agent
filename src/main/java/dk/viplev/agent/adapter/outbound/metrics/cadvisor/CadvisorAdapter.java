@@ -88,6 +88,7 @@ public class CadvisorAdapter implements CadvisorPort {
         CadvisorContainerInfo.CadvisorStat last = stats.getLast();
 
         if (first.cpu() == null || last.cpu() == null
+                || first.cpu().usage() == null || last.cpu().usage() == null
                 || first.timestamp() == null || last.timestamp() == null) {
             return 0.0;
         }
