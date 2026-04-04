@@ -58,7 +58,7 @@ public class ServiceDiscoveryServiceImpl implements ServiceDiscoveryUseCase {
                 .ipAddress(node.ipAddress())
                 .os(node.os())
                 .osVersion(node.osVersion())
-                .cpuCores(null)
+                .cpuCores(null) // physical core count not available from Docker API; optional field
                 .cpuThreads(node.logicalCpuCount())
                 .ramTotalBytes(node.ramTotalBytes());
     }

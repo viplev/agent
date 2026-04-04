@@ -2,6 +2,7 @@ package dk.viplev.agent.adapter.outbound.discovery.docker;
 
 import com.github.dockerjava.api.DockerClient;
 import com.github.dockerjava.api.exception.DockerException;
+import com.github.dockerjava.api.model.Info;
 import com.github.dockerjava.api.model.LocalNodeState;
 import com.github.dockerjava.api.model.SwarmNode;
 import dk.viplev.agent.domain.exception.ContainerRuntimeException;
@@ -31,7 +32,7 @@ public class DockerNodeDiscoveryAdapter implements NodeDiscoveryPort {
     @Override
     public List<NodeInfo> discoverNodes() {
         try {
-            var info = dockerClient.infoCmd().exec();
+            Info info = dockerClient.infoCmd().exec();
             LocalNodeState localNodeState = info.getSwarm() != null
                     ? info.getSwarm().getLocalNodeState()
                     : null;
@@ -77,13 +78,13 @@ public class DockerNodeDiscoveryAdapter implements NodeDiscoveryPort {
         long ramTotalBytes = resources != null && resources.getMemoryBytes() != null
                 ? resources.getMemoryBytes() : 0L;
 
-        return new NodeInfo(machineId, hostname, ipAddress, os, "", cpuCores, ramTotalBytes);
+        return new NodeInfo(machineId, hostname, ipAddress, os, null, cpuCores, ramTotalBytes);
     }
 
     @Override
     public String getLocalNodeId() {
         try {
-            var info = dockerClient.infoCmd().exec();
+            Info info = dockerClient.infoCmd().exec();
             LocalNodeState localNodeState = info.getSwarm() != null
                     ? info.getSwarm().getLocalNodeState()
                     : null;
