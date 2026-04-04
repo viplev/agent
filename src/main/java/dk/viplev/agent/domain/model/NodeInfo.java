@@ -6,6 +6,6 @@ public record NodeInfo(
         String ipAddress,
         String os,
         String osVersion,
-        int cpuCores,
+        int logicalCpuCount,
         long ramTotalBytes
 ) {}

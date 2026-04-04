@@ -56,6 +56,7 @@ class ServiceDiscoveryServiceImplTest {
         );
         when(containerPort.listContainers()).thenReturn(containers);
         when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(testNode));
+        when(nodeDiscoveryPort.getLocalNodeId()).thenReturn("daemon-id-abc123");
 
         service.syncServices();
 
@@ -70,7 +71,8 @@ class ServiceDiscoveryServiceImplTest {
         assertThat(hostEntry.getHost().getName()).isEqualTo("test-host");
         assertThat(hostEntry.getHost().getIpAddress()).isEqualTo("192.168.1.1");
         assertThat(hostEntry.getHost().getOs()).isEqualTo("Linux");
-        assertThat(hostEntry.getHost().getCpuCores()).isEqualTo(8);
+        assertThat(hostEntry.getHost().getCpuCores()).isNull();
+        assertThat(hostEntry.getHost().getCpuThreads()).isEqualTo(8);
         assertThat(hostEntry.getHost().getRamTotalBytes()).isEqualTo(16_000_000_000L);
         assertThat(hostEntry.getServices()).hasSize(2);
 
@@ -81,11 +83,12 @@ class ServiceDiscoveryServiceImplTest {
     }
 
     @Test
-    void syncServices_multipleNodes_eachGetsServices() {
+    void syncServices_multipleNodes_onlyLocalNodeGetsServices() {
         var node2 = new NodeInfo("daemon-id-xyz", "node2", "192.168.1.2", "Linux", "5.15.0", 4, 8_000_000_000L);
         when(containerPort.listContainers()).thenReturn(List.of(
                 new ContainerInfo("id1", "nginx", "nginx:latest", "sha256:aaa", "running", null, null, null, null)));
         when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(testNode, node2));
+        when(nodeDiscoveryPort.getLocalNodeId()).thenReturn("daemon-id-abc123");
 
         service.syncServices();
 
@@ -97,7 +100,7 @@ class ServiceDiscoveryServiceImplTest {
         assertThat(hosts.get(0).getHost().getMachineId()).isEqualTo("daemon-id-abc123");
         assertThat(hosts.get(1).getHost().getMachineId()).isEqualTo("daemon-id-xyz");
         assertThat(hosts.get(0).getServices()).hasSize(1);
-        assertThat(hosts.get(1).getServices()).hasSize(1);
+        assertThat(hosts.get(1).getServices()).isEmpty();
     }
 
     @Test
@@ -106,6 +109,7 @@ class ServiceDiscoveryServiceImplTest {
                 2_000_000_000L, null, null, null);
         when(containerPort.listContainers()).thenReturn(List.of(container));
         when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(testNode));
+        when(nodeDiscoveryPort.getLocalNodeId()).thenReturn("daemon-id-abc123");
 
         service.syncServices();
 
@@ -121,6 +125,7 @@ class ServiceDiscoveryServiceImplTest {
                 null, 1024L, null, null);
         when(containerPort.listContainers()).thenReturn(List.of(container));
         when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(testNode));
+        when(nodeDiscoveryPort.getLocalNodeId()).thenReturn("daemon-id-abc123");
 
         service.syncServices();
 
@@ -136,6 +141,7 @@ class ServiceDiscoveryServiceImplTest {
                 null, null, null, null);
         when(containerPort.listContainers()).thenReturn(List.of(container));
         when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(testNode));
+        when(nodeDiscoveryPort.getLocalNodeId()).thenReturn("daemon-id-abc123");
 
         service.syncServices();
 
@@ -153,6 +159,7 @@ class ServiceDiscoveryServiceImplTest {
     void syncServices_emptyNodeList_registersEmptyHosts() {
         when(containerPort.listContainers()).thenReturn(List.of());
         when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of());
+        when(nodeDiscoveryPort.getLocalNodeId()).thenReturn("daemon-id-abc123");
 
         service.syncServices();
 
@@ -174,6 +181,7 @@ class ServiceDiscoveryServiceImplTest {
     void syncServices_propagatesApiException() {
         when(containerPort.listContainers()).thenReturn(List.of());
         when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(testNode));
+        when(nodeDiscoveryPort.getLocalNodeId()).thenReturn("daemon-id-abc123");
         doThrow(new ViplevApiException("API error", 500))
                 .when(viplevApiPort).registerServices(org.mockito.ArgumentMatchers.any());
 

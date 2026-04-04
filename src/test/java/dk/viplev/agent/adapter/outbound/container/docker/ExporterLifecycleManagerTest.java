@@ -6,30 +6,37 @@ import com.github.dockerjava.api.command.CreateContainerCmd;
 import com.github.dockerjava.api.command.CreateContainerResponse;
 import com.github.dockerjava.api.command.CreateNetworkCmd;
 import com.github.dockerjava.api.command.CreateNetworkResponse;
+import com.github.dockerjava.api.command.CreateServiceCmd;
+import com.github.dockerjava.api.command.CreateServiceResponse;
 import com.github.dockerjava.api.command.InspectImageCmd;
 import com.github.dockerjava.api.command.InspectImageResponse;
 import com.github.dockerjava.api.command.ListContainersCmd;
 import com.github.dockerjava.api.command.ListNetworksCmd;
+import com.github.dockerjava.api.command.ListServicesCmd;
 import com.github.dockerjava.api.command.PullImageCmd;
 import com.github.dockerjava.api.command.PullImageResultCallback;
 import com.github.dockerjava.api.command.RemoveContainerCmd;
 import com.github.dockerjava.api.command.RemoveNetworkCmd;
+import com.github.dockerjava.api.command.RemoveServiceCmd;
 import com.github.dockerjava.api.command.StartContainerCmd;
 import com.github.dockerjava.api.exception.DockerException;
 import com.github.dockerjava.api.exception.NotFoundException;
 import com.github.dockerjava.api.model.Container;
 import com.github.dockerjava.api.model.HostConfig;
 import com.github.dockerjava.api.model.Network;
+import com.github.dockerjava.api.model.Service;
+import com.github.dockerjava.api.model.ServiceSpec;
 import dk.viplev.agent.domain.exception.ContainerRuntimeException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
-import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -37,6 +44,7 @@ import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -46,24 +54,20 @@ class ExporterLifecycleManagerTest {
     @Mock
     private DockerClient dockerClient;
 
-    @Spy
-    private ExporterLifecycleManager manager = new ExporterLifecycleManager(
-            null, // replaced by @Spy field injection via setter — handled in setUp
-            "gcr.io/cadvisor/cadvisor:v0.51.0",
-            "prom/node-exporter:v1.9.0"
-    );
+    private ExporterLifecycleManager manager;
 
     @BeforeEach
     void setUp() {
-        manager = new ExporterLifecycleManager(
+        manager = spy(new ExporterLifecycleManager(
                 dockerClient,
                 "gcr.io/cadvisor/cadvisor:v0.51.0",
                 "prom/node-exporter:v1.9.0"
-        );
-        // Spy on the manager to stub readSelfContainerId without file I/O
-        manager = org.mockito.Mockito.spy(manager);
+        ));
         lenient().doReturn("test-agent-container-id").when(manager).readSelfContainerId();
+        lenient().doReturn(false).when(manager).isSwarmActive();
     }
+
+    // -- Standalone mode tests --
 
     @Test
     void startup_createsNetworkConnectsAgentAndStartsContainers() {
@@ -139,6 +143,25 @@ class ExporterLifecycleManagerTest {
     }
 
     @Test
+    void startup_standaloneMode_createsBridgeNetwork() {
+        var networkResponse = mock(CreateNetworkResponse.class);
+        when(networkResponse.getId()).thenReturn("net-id");
+        var createNetworkCmd = mock(CreateNetworkCmd.class);
+        when(dockerClient.createNetworkCmd()).thenReturn(createNetworkCmd);
+        when(createNetworkCmd.withName(anyString())).thenReturn(createNetworkCmd);
+        when(createNetworkCmd.withDriver(anyString())).thenReturn(createNetworkCmd);
+        when(createNetworkCmd.exec()).thenReturn(networkResponse);
+        mockConnectToNetwork();
+        mockImagesPresent();
+        mockEmptyContainerList();
+        mockContainerCreationAndStart("cadvisor-id", "node-exporter-id");
+
+        manager.start();
+
+        verify(createNetworkCmd).withDriver("bridge");
+    }
+
+    @Test
     void startup_handlesNetworkAlreadyExists() {
         var createNetworkCmd = mock(CreateNetworkCmd.class);
         when(dockerClient.createNetworkCmd()).thenReturn(createNetworkCmd);
@@ -147,7 +170,6 @@ class ExporterLifecycleManagerTest {
         when(createNetworkCmd.exec()).thenThrow(new DockerException(
                 "network with name viplev_agent already exists", 409));
 
-        // Must also stub listNetworksCmd used in findNetworkId fallback
         var network = mock(Network.class);
         when(network.getName()).thenReturn(ExporterLifecycleManager.NETWORK_NAME);
         when(network.getId()).thenReturn("existing-net-id");
@@ -223,6 +245,102 @@ class ExporterLifecycleManagerTest {
         verify(dockerClient).removeContainerCmd(ExporterLifecycleManager.NODE_EXPORTER_CONTAINER_NAME);
     }
 
+    // -- Swarm mode tests --
+
+    @Test
+    void startup_swarmMode_createsOverlayNetwork() {
+        doReturn(true).when(manager).isSwarmActive();
+
+        var createNetworkCmd = mock(CreateNetworkCmd.class);
+        when(dockerClient.createNetworkCmd()).thenReturn(createNetworkCmd);
+        when(createNetworkCmd.withName(anyString())).thenReturn(createNetworkCmd);
+        when(createNetworkCmd.withDriver(anyString())).thenReturn(createNetworkCmd);
+        when(createNetworkCmd.withAttachable(true)).thenReturn(createNetworkCmd);
+        var networkResponse = mock(CreateNetworkResponse.class);
+        when(networkResponse.getId()).thenReturn("net-id");
+        when(createNetworkCmd.exec()).thenReturn(networkResponse);
+
+        mockSwarmServiceAbsent();
+        mockSwarmServiceCreation();
+
+        manager.start();
+
+        verify(createNetworkCmd).withDriver("overlay");
+        verify(createNetworkCmd).withAttachable(true);
+    }
+
+    @Test
+    void startup_swarmMode_createsGlobalServices() {
+        doReturn(true).when(manager).isSwarmActive();
+        mockSwarmNetworkCreation();
+        mockSwarmServiceAbsent();
+
+        var createServiceCmd = mock(CreateServiceCmd.class);
+        when(dockerClient.createServiceCmd(any(ServiceSpec.class))).thenReturn(createServiceCmd);
+        var createServiceResponse = mock(CreateServiceResponse.class);
+        when(createServiceCmd.exec()).thenReturn(createServiceResponse);
+
+        manager.start();
+
+        var captor = ArgumentCaptor.forClass(ServiceSpec.class);
+        verify(dockerClient, org.mockito.Mockito.times(2)).createServiceCmd(captor.capture());
+
+        List<ServiceSpec> specs = captor.getAllValues();
+        assertThat(specs.get(0).getName()).isEqualTo(ExporterLifecycleManager.CADVISOR_CONTAINER_NAME);
+        assertThat(specs.get(1).getName()).isEqualTo(ExporterLifecycleManager.NODE_EXPORTER_CONTAINER_NAME);
+        assertThat(specs.get(0).getMode().getGlobal()).isNotNull();
+        assertThat(specs.get(1).getMode().getGlobal()).isNotNull();
+        assertThat(specs.get(0).getTaskTemplate().getNetworks().get(0).getTarget())
+                .isEqualTo(ExporterLifecycleManager.NETWORK_NAME);
+    }
+
+    @Test
+    void startup_swarmMode_skipsServiceIfAlreadyPresent() {
+        doReturn(true).when(manager).isSwarmActive();
+        mockSwarmNetworkCreation();
+
+        var listServicesCmd = mock(ListServicesCmd.class);
+        when(dockerClient.listServicesCmd()).thenReturn(listServicesCmd);
+        when(listServicesCmd.withNameFilter(any())).thenReturn(listServicesCmd);
+
+        var cadvisorService = mock(Service.class);
+        var cadvisorSpec = mock(ServiceSpec.class);
+        when(cadvisorService.getSpec()).thenReturn(cadvisorSpec);
+        when(cadvisorSpec.getName()).thenReturn(ExporterLifecycleManager.CADVISOR_CONTAINER_NAME);
+
+        var nodeExporterService = mock(Service.class);
+        var nodeExporterSpec = mock(ServiceSpec.class);
+        when(nodeExporterService.getSpec()).thenReturn(nodeExporterSpec);
+        when(nodeExporterSpec.getName()).thenReturn(ExporterLifecycleManager.NODE_EXPORTER_CONTAINER_NAME);
+
+        when(listServicesCmd.exec())
+                .thenReturn(List.of(cadvisorService))
+                .thenReturn(List.of(nodeExporterService));
+
+        manager.start();
+
+        verify(dockerClient, never()).createServiceCmd(any(ServiceSpec.class));
+    }
+
+    @Test
+    void shutdown_swarmMode_removesSwarmServices() {
+        doReturn(true).when(manager).isSwarmActive();
+
+        var removeServiceCmd = mock(RemoveServiceCmd.class);
+        when(dockerClient.removeServiceCmd(anyString())).thenReturn(removeServiceCmd);
+
+        var listNetworksCmd = mock(ListNetworksCmd.class);
+        when(dockerClient.listNetworksCmd()).thenReturn(listNetworksCmd);
+        when(listNetworksCmd.withNameFilter(anyString())).thenReturn(listNetworksCmd);
+        when(listNetworksCmd.exec()).thenReturn(List.of());
+
+        manager.stop();
+
+        verify(dockerClient).removeServiceCmd(ExporterLifecycleManager.CADVISOR_CONTAINER_NAME);
+        verify(dockerClient).removeServiceCmd(ExporterLifecycleManager.NODE_EXPORTER_CONTAINER_NAME);
+        verify(dockerClient, never()).removeContainerCmd(anyString());
+    }
+
     // -- Helpers --
 
     private void mockNetworkCreation(CreateNetworkResponse response) {
@@ -231,6 +349,31 @@ class ExporterLifecycleManagerTest {
         when(createNetworkCmd.withName(anyString())).thenReturn(createNetworkCmd);
         when(createNetworkCmd.withDriver(anyString())).thenReturn(createNetworkCmd);
         when(createNetworkCmd.exec()).thenReturn(response);
+    }
+
+    private void mockSwarmNetworkCreation() {
+        var createNetworkCmd = mock(CreateNetworkCmd.class);
+        when(dockerClient.createNetworkCmd()).thenReturn(createNetworkCmd);
+        when(createNetworkCmd.withName(anyString())).thenReturn(createNetworkCmd);
+        when(createNetworkCmd.withDriver(anyString())).thenReturn(createNetworkCmd);
+        when(createNetworkCmd.withAttachable(true)).thenReturn(createNetworkCmd);
+        var networkResponse = mock(CreateNetworkResponse.class);
+        when(networkResponse.getId()).thenReturn("net-id");
+        when(createNetworkCmd.exec()).thenReturn(networkResponse);
+    }
+
+    private void mockSwarmServiceAbsent() {
+        var listServicesCmd = mock(ListServicesCmd.class);
+        when(dockerClient.listServicesCmd()).thenReturn(listServicesCmd);
+        when(listServicesCmd.withNameFilter(any())).thenReturn(listServicesCmd);
+        when(listServicesCmd.exec()).thenReturn(List.of());
+    }
+
+    private void mockSwarmServiceCreation() {
+        var createServiceCmd = mock(CreateServiceCmd.class);
+        when(dockerClient.createServiceCmd(any(ServiceSpec.class))).thenReturn(createServiceCmd);
+        var createServiceResponse = mock(CreateServiceResponse.class);
+        when(createServiceCmd.exec()).thenReturn(createServiceResponse);
     }
 
     private void mockConnectToNetwork() {

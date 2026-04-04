@@ -40,14 +40,15 @@ public class ServiceDiscoveryServiceImpl implements ServiceDiscoveryUseCase {
     public void syncServices() {
         var containers = containerPort.listContainers();
         var services = containers.stream().map(this::toServiceDTO).toList();
+        var localNodeId = nodeDiscoveryPort.getLocalNodeId();
         var hosts = nodeDiscoveryPort.discoverNodes().stream()
                 .map(node -> new ServiceRegistrationHostDTO()
                         .host(toHostDto(node))
-                        .services(services))
+                        .services(node.machineId().equals(localNodeId) ? services : List.of()))
                 .toList();
 
         viplevApiPort.registerServices(new ServiceRegistrationDTO().hosts(hosts));
-        log.info("Registered {} services on {} host(s) with VIPLEV", services.size(), hosts.size());
+        log.info("Registered {} services on local node, {} host(s) total with VIPLEV", services.size(), hosts.size());
     }
 
     private HostDTO toHostDto(NodeInfo node) {
@@ -57,8 +58,8 @@ public class ServiceDiscoveryServiceImpl implements ServiceDiscoveryUseCase {
                 .ipAddress(node.ipAddress())
                 .os(node.os())
                 .osVersion(node.osVersion())
-                .cpuCores(node.cpuCores())
-                .cpuThreads(node.cpuCores())
+                .cpuCores(null)
+                .cpuThreads(node.logicalCpuCount())
                 .ramTotalBytes(node.ramTotalBytes());
     }
 

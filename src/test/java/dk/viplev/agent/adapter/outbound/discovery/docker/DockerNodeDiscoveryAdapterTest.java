@@ -9,6 +9,7 @@ import com.github.dockerjava.api.model.SwarmNodeDescription;
 import com.github.dockerjava.api.model.SwarmNodeResources;
 import com.github.dockerjava.api.model.SwarmNodeStatus;
 import com.github.dockerjava.api.model.LocalNodeState;
+import com.github.dockerjava.api.model.SwarmInfo;
 import com.github.dockerjava.api.model.SwarmSpec;
 import dk.viplev.agent.domain.model.NodeInfo;
 import org.junit.jupiter.api.BeforeEach;
@@ -55,7 +56,7 @@ class DockerNodeDiscoveryAdapterTest {
         assertThat(node.ipAddress()).isEqualTo("192.168.1.10");
         assertThat(node.os()).isEqualTo("Ubuntu 22.04");
         assertThat(node.osVersion()).isEqualTo("5.15.0");
-        assertThat(node.cpuCores()).isEqualTo(8);
+        assertThat(node.logicalCpuCount()).isEqualTo(8);
         assertThat(node.ramTotalBytes()).isEqualTo(16_000_000_000L);
     }
 
@@ -79,12 +80,12 @@ class DockerNodeDiscoveryAdapterTest {
         assertThat(first.hostname()).isEqualTo("worker-1");
         assertThat(first.ipAddress()).isEqualTo("10.0.0.1");
         assertThat(first.os()).isEqualTo("linux");
-        assertThat(first.cpuCores()).isEqualTo(4);
+        assertThat(first.logicalCpuCount()).isEqualTo(4);
         assertThat(first.ramTotalBytes()).isEqualTo(8_000_000_000L);
 
         NodeInfo second = nodes.get(1);
         assertThat(second.machineId()).isEqualTo("swarm-node-2");
-        assertThat(second.cpuCores()).isEqualTo(8);
+        assertThat(second.logicalCpuCount()).isEqualTo(8);
     }
 
     @Test
@@ -100,6 +101,32 @@ class DockerNodeDiscoveryAdapterTest {
 
         // IP comes from node status, not NetworkInterface
         assertThat(nodes.getFirst().ipAddress()).isEqualTo("172.20.0.5");
+    }
+
+    @Test
+    void getLocalNodeId_standaloneMode_returnsDaemonId() {
+        var infoCmd = mock(InfoCmd.class);
+        when(dockerClient.infoCmd()).thenReturn(infoCmd);
+        var info = mock(Info.class);
+        when(infoCmd.exec()).thenReturn(info);
+        when(info.getId()).thenReturn("daemon-id-abc123");
+        when(info.getSwarm()).thenReturn(null);
+
+        assertThat(adapter.getLocalNodeId()).isEqualTo("daemon-id-abc123");
+    }
+
+    @Test
+    void getLocalNodeId_swarmMode_returnsSwarmNodeId() {
+        var infoCmd = mock(InfoCmd.class);
+        when(dockerClient.infoCmd()).thenReturn(infoCmd);
+        var info = mock(Info.class);
+        when(infoCmd.exec()).thenReturn(info);
+        var swarmInfo = mock(SwarmInfo.class);
+        when(info.getSwarm()).thenReturn(swarmInfo);
+        when(swarmInfo.getLocalNodeState()).thenReturn(LocalNodeState.ACTIVE);
+        when(swarmInfo.getNodeID()).thenReturn("swarm-node-id-xyz");
+
+        assertThat(adapter.getLocalNodeId()).isEqualTo("swarm-node-id-xyz");
     }
 
     // -- Helpers --
@@ -119,7 +146,7 @@ class DockerNodeDiscoveryAdapterTest {
         when(info.getMemTotal()).thenReturn(memTotal);
 
         if (swarmLocalNodeState != null) {
-            var swarmInfo = mock(com.github.dockerjava.api.model.SwarmInfo.class);
+            var swarmInfo = mock(SwarmInfo.class);
             when(info.getSwarm()).thenReturn(swarmInfo);
             when(swarmInfo.getLocalNodeState()).thenReturn(LocalNodeState.forValue(swarmLocalNodeState));
         } else {
@@ -132,7 +159,7 @@ class DockerNodeDiscoveryAdapterTest {
         when(dockerClient.infoCmd()).thenReturn(infoCmd);
         var info = mock(Info.class);
         when(infoCmd.exec()).thenReturn(info);
-        var swarmInfo = mock(com.github.dockerjava.api.model.SwarmInfo.class);
+        var swarmInfo = mock(SwarmInfo.class);
         when(info.getSwarm()).thenReturn(swarmInfo);
         when(swarmInfo.getLocalNodeState()).thenReturn(LocalNodeState.forValue(swarmLocalNodeState));
     }

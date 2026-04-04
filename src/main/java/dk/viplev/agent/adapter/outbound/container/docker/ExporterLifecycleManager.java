@@ -6,8 +6,18 @@ import com.github.dockerjava.api.exception.DockerException;
 import com.github.dockerjava.api.exception.NotFoundException;
 import com.github.dockerjava.api.model.AccessMode;
 import com.github.dockerjava.api.model.Bind;
+import com.github.dockerjava.api.model.ContainerSpec;
 import com.github.dockerjava.api.model.HostConfig;
+import com.github.dockerjava.api.model.LocalNodeState;
+import com.github.dockerjava.api.model.Mount;
+import com.github.dockerjava.api.model.MountType;
 import com.github.dockerjava.api.model.Network;
+import com.github.dockerjava.api.model.NetworkAttachmentConfig;
+import com.github.dockerjava.api.model.Service;
+import com.github.dockerjava.api.model.ServiceGlobalModeOptions;
+import com.github.dockerjava.api.model.ServiceModeConfig;
+import com.github.dockerjava.api.model.ServiceSpec;
+import com.github.dockerjava.api.model.TaskSpec;
 import com.github.dockerjava.api.model.Volume;
 import dk.viplev.agent.domain.exception.ContainerRuntimeException;
 import jakarta.annotation.PreDestroy;
@@ -48,29 +58,54 @@ public class ExporterLifecycleManager {
 
     @EventListener(ApplicationReadyEvent.class)
     public void start() {
-        String networkId = ensureNetworkExists();
-        connectAgentToNetwork(networkId);
-        pullImageIfAbsent(cadvisorImage);
-        startContainerIfAbsent(CADVISOR_CONTAINER_NAME, cadvisorImage, buildCadvisorHostConfig(), List.of());
-        pullImageIfAbsent(nodeExporterImage);
-        startContainerIfAbsent(NODE_EXPORTER_CONTAINER_NAME, nodeExporterImage, buildNodeExporterHostConfig(),
-                List.of("--path.procfs=/host/proc", "--path.sysfs=/host/sys", "--path.rootfs=/rootfs"));
+        boolean swarm = isSwarmActive();
+        String networkId = ensureNetworkExists(swarm);
+
+        if (swarm) {
+            startSwarmServiceIfAbsent(CADVISOR_CONTAINER_NAME, cadvisorImage,
+                    buildCadvisorMounts(), List.of());
+            startSwarmServiceIfAbsent(NODE_EXPORTER_CONTAINER_NAME, nodeExporterImage,
+                    buildNodeExporterMounts(),
+                    List.of("--path.procfs=/host/proc", "--path.sysfs=/host/sys", "--path.rootfs=/rootfs"));
+        } else {
+            connectAgentToNetwork(networkId);
+            pullImageIfAbsent(cadvisorImage);
+            startContainerIfAbsent(CADVISOR_CONTAINER_NAME, cadvisorImage, buildCadvisorHostConfig(), List.of());
+            pullImageIfAbsent(nodeExporterImage);
+            startContainerIfAbsent(NODE_EXPORTER_CONTAINER_NAME, nodeExporterImage, buildNodeExporterHostConfig(),
+                    List.of("--path.procfs=/host/proc", "--path.sysfs=/host/sys", "--path.rootfs=/rootfs"));
+        }
     }
 
     @PreDestroy
     public void stop() {
-        removeContainer(CADVISOR_CONTAINER_NAME);
-        removeContainer(NODE_EXPORTER_CONTAINER_NAME);
+        if (isSwarmActive()) {
+            removeSwarmService(CADVISOR_CONTAINER_NAME);
+            removeSwarmService(NODE_EXPORTER_CONTAINER_NAME);
+        } else {
+            removeContainer(CADVISOR_CONTAINER_NAME);
+            removeContainer(NODE_EXPORTER_CONTAINER_NAME);
+        }
         removeNetwork(NETWORK_NAME);
     }
 
-    private String ensureNetworkExists() {
+    boolean isSwarmActive() {
+        var info = dockerClient.infoCmd().exec();
+        return info.getSwarm() != null
+                && LocalNodeState.ACTIVE == info.getSwarm().getLocalNodeState();
+    }
+
+    private String ensureNetworkExists(boolean swarm) {
         try {
-            var response = dockerClient.createNetworkCmd()
+            String driver = swarm ? "overlay" : "bridge";
+            var cmd = dockerClient.createNetworkCmd()
                     .withName(NETWORK_NAME)
-                    .withDriver("bridge")
-                    .exec();
-            log.info("Created Docker network '{}'", NETWORK_NAME);
+                    .withDriver(driver);
+            if (swarm) {
+                cmd.withAttachable(true);
+            }
+            var response = cmd.exec();
+            log.info("Created Docker {} network '{}'", driver, NETWORK_NAME);
             return response.getId();
         } catch (DockerException e) {
             if (e.getMessage() != null && e.getMessage().contains("already exists")) {
@@ -189,6 +224,51 @@ public class ExporterLifecycleManager {
         }
     }
 
+    private void startSwarmServiceIfAbsent(String serviceName, String image, List<Mount> mounts, List<String> args) {
+        if (isSwarmServicePresent(serviceName)) {
+            log.info("Swarm service '{}' already exists, skipping", serviceName);
+            return;
+        }
+
+        var containerSpec = new ContainerSpec().withImage(image).withMounts(mounts);
+        if (!args.isEmpty()) {
+            containerSpec.withArgs(args);
+        }
+
+        // Note: Docker Swarm services do not support --privileged. Cadvisor works with
+        // bind mounts alone for most metrics; some advanced disk I/O stats may be unavailable.
+        var taskSpec = new TaskSpec()
+                .withContainerSpec(containerSpec)
+                .withNetworks(List.of(new NetworkAttachmentConfig().withTarget(NETWORK_NAME)));
+
+        var serviceSpec = new ServiceSpec()
+                .withName(serviceName)
+                .withTaskTemplate(taskSpec)
+                .withMode(new ServiceModeConfig().withGlobal(new ServiceGlobalModeOptions()));
+
+        dockerClient.createServiceCmd(serviceSpec).exec();
+        log.info("Created global Swarm service '{}' with image '{}'", serviceName, image);
+    }
+
+    private boolean isSwarmServicePresent(String serviceName) {
+        return dockerClient.listServicesCmd()
+                .withNameFilter(List.of(serviceName))
+                .exec()
+                .stream()
+                .map(Service::getSpec)
+                .filter(spec -> spec != null)
+                .anyMatch(spec -> serviceName.equals(spec.getName()));
+    }
+
+    private void removeSwarmService(String serviceName) {
+        try {
+            dockerClient.removeServiceCmd(serviceName).exec();
+            log.info("Removed Swarm service '{}'", serviceName);
+        } catch (Exception e) {
+            log.warn("Failed to remove Swarm service '{}': {}", serviceName, e.getMessage());
+        }
+    }
+
     private HostConfig buildCadvisorHostConfig() {
         return HostConfig.newHostConfig()
                 .withBinds(
@@ -209,5 +289,22 @@ public class ExporterLifecycleManager {
                         new Bind("/", new Volume("/rootfs"), AccessMode.ro)
                 )
                 .withNetworkMode(NETWORK_NAME);
+    }
+
+    private List<Mount> buildCadvisorMounts() {
+        return List.of(
+                new Mount().withType(MountType.BIND).withSource("/").withTarget("/rootfs").withReadOnly(true),
+                new Mount().withType(MountType.BIND).withSource("/var/run").withTarget("/var/run").withReadOnly(true),
+                new Mount().withType(MountType.BIND).withSource("/sys").withTarget("/sys").withReadOnly(true),
+                new Mount().withType(MountType.BIND).withSource("/var/lib/docker").withTarget("/var/lib/docker").withReadOnly(true)
+        );
+    }
+
+    private List<Mount> buildNodeExporterMounts() {
+        return List.of(
+                new Mount().withType(MountType.BIND).withSource("/proc").withTarget("/host/proc").withReadOnly(true),
+                new Mount().withType(MountType.BIND).withSource("/sys").withTarget("/host/sys").withReadOnly(true),
+                new Mount().withType(MountType.BIND).withSource("/").withTarget("/rootfs").withReadOnly(true)
+        );
     }
 }

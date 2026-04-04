@@ -47,8 +47,8 @@ public class DockerNodeDiscoveryAdapter implements NodeDiscoveryPort {
                         resolveLocalIpAddress(),
                         info.getOperatingSystem(),
                         info.getKernelVersion(),
-                        info.getNCPU(),
-                        info.getMemTotal()
+                        info.getNCPU() != null ? info.getNCPU() : 0,
+                        info.getMemTotal() != null ? info.getMemTotal() : 0L
                 ));
             }
         } catch (DockerException e) {
@@ -78,6 +78,18 @@ public class DockerNodeDiscoveryAdapter implements NodeDiscoveryPort {
                 ? resources.getMemoryBytes() : 0L;
 
         return new NodeInfo(machineId, hostname, ipAddress, os, "", cpuCores, ramTotalBytes);
+    }
+
+    @Override
+    public String getLocalNodeId() {
+        var info = dockerClient.infoCmd().exec();
+        LocalNodeState localNodeState = info.getSwarm() != null
+                ? info.getSwarm().getLocalNodeState()
+                : null;
+        if (LocalNodeState.ACTIVE == localNodeState) {
+            return info.getSwarm().getNodeID();
+        }
+        return info.getId();
     }
 
     String resolveLocalIpAddress() {
