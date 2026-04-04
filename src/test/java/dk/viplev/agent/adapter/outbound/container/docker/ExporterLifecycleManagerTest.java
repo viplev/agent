@@ -8,6 +8,8 @@ import com.github.dockerjava.api.command.CreateNetworkCmd;
 import com.github.dockerjava.api.command.CreateNetworkResponse;
 import com.github.dockerjava.api.command.CreateServiceCmd;
 import com.github.dockerjava.api.command.CreateServiceResponse;
+import com.github.dockerjava.api.command.InspectContainerCmd;
+import com.github.dockerjava.api.command.InspectContainerResponse;
 import com.github.dockerjava.api.command.InspectImageCmd;
 import com.github.dockerjava.api.command.InspectImageResponse;
 import com.github.dockerjava.api.command.ListContainersCmd;
@@ -116,7 +118,7 @@ class ExporterLifecycleManagerTest {
     }
 
     @Test
-    void startup_skipsContainerIfAlreadyPresent() {
+    void startup_skipsContainerIfAlreadyRunning() {
         var networkResponse = mock(CreateNetworkResponse.class);
         when(networkResponse.getId()).thenReturn("net-id");
         mockNetworkCreation(networkResponse);
@@ -125,9 +127,11 @@ class ExporterLifecycleManagerTest {
 
         var existingCadvisor = mock(Container.class);
         when(existingCadvisor.getNames()).thenReturn(new String[]{"/viplev-cadvisor"});
+        when(existingCadvisor.getId()).thenReturn("existing-cadvisor-id");
 
         var existingNodeExporter = mock(Container.class);
         when(existingNodeExporter.getNames()).thenReturn(new String[]{"/viplev-node-exporter"});
+        when(existingNodeExporter.getId()).thenReturn("existing-node-exporter-id");
 
         var listCmd = mock(ListContainersCmd.class);
         when(dockerClient.listContainersCmd()).thenReturn(listCmd);
@@ -137,9 +141,50 @@ class ExporterLifecycleManagerTest {
                 .thenReturn(List.of(existingCadvisor))
                 .thenReturn(List.of(existingNodeExporter));
 
+        mockRunningContainerState("existing-cadvisor-id");
+        mockRunningContainerState("existing-node-exporter-id");
+
         manager.start();
 
         verify(dockerClient, never()).createContainerCmd(anyString());
+    }
+
+    @Test
+    void startup_startsExistingStoppedContainer() {
+        var networkResponse = mock(CreateNetworkResponse.class);
+        when(networkResponse.getId()).thenReturn("net-id");
+        mockNetworkCreation(networkResponse);
+        mockConnectToNetwork();
+        mockImagesPresent();
+
+        var stoppedCadvisor = mock(Container.class);
+        when(stoppedCadvisor.getNames()).thenReturn(new String[]{"/viplev-cadvisor"});
+        when(stoppedCadvisor.getId()).thenReturn("stopped-cadvisor-id");
+
+        var stoppedNodeExporter = mock(Container.class);
+        when(stoppedNodeExporter.getNames()).thenReturn(new String[]{"/viplev-node-exporter"});
+        when(stoppedNodeExporter.getId()).thenReturn("stopped-node-exporter-id");
+
+        var listCmd = mock(ListContainersCmd.class);
+        when(dockerClient.listContainersCmd()).thenReturn(listCmd);
+        when(listCmd.withNameFilter(any())).thenReturn(listCmd);
+        when(listCmd.withShowAll(true)).thenReturn(listCmd);
+        when(listCmd.exec())
+                .thenReturn(List.of(stoppedCadvisor))
+                .thenReturn(List.of(stoppedNodeExporter));
+
+        mockStoppedContainerState("stopped-cadvisor-id");
+        mockStoppedContainerState("stopped-node-exporter-id");
+
+        var startCmd = mock(StartContainerCmd.class);
+        when(dockerClient.startContainerCmd("stopped-cadvisor-id")).thenReturn(startCmd);
+        when(dockerClient.startContainerCmd("stopped-node-exporter-id")).thenReturn(startCmd);
+
+        manager.start();
+
+        verify(dockerClient, never()).createContainerCmd(anyString());
+        verify(dockerClient).startContainerCmd("stopped-cadvisor-id");
+        verify(dockerClient).startContainerCmd("stopped-node-exporter-id");
     }
 
     @Test
@@ -173,6 +218,7 @@ class ExporterLifecycleManagerTest {
         var network = mock(Network.class);
         when(network.getName()).thenReturn(ExporterLifecycleManager.NETWORK_NAME);
         when(network.getId()).thenReturn("existing-net-id");
+        when(network.getDriver()).thenReturn("bridge");
         var listNetworksCmd = mock(ListNetworksCmd.class);
         when(dockerClient.listNetworksCmd()).thenReturn(listNetworksCmd);
         when(listNetworksCmd.withNameFilter(anyString())).thenReturn(listNetworksCmd);
@@ -187,6 +233,44 @@ class ExporterLifecycleManagerTest {
 
         verify(dockerClient).createContainerCmd("gcr.io/cadvisor/cadvisor:v0.51.0");
         verify(dockerClient).createContainerCmd("prom/node-exporter:v1.9.0");
+    }
+
+    @Test
+    void startup_recreatesNetworkIfDriverMismatch() {
+        doReturn(true).when(manager).isSwarmActive();
+
+        var createNetworkCmd = mock(CreateNetworkCmd.class);
+        when(dockerClient.createNetworkCmd()).thenReturn(createNetworkCmd);
+        when(createNetworkCmd.withName(anyString())).thenReturn(createNetworkCmd);
+        when(createNetworkCmd.withDriver(anyString())).thenReturn(createNetworkCmd);
+        when(createNetworkCmd.withAttachable(true)).thenReturn(createNetworkCmd);
+        var createNetworkResponse = mock(CreateNetworkResponse.class);
+        when(createNetworkResponse.getId()).thenReturn("new-net-id");
+        when(createNetworkCmd.exec())
+                .thenThrow(new DockerException("network with name viplev_agent already exists", 409))
+                .thenReturn(createNetworkResponse);
+
+        var existingNetwork = mock(Network.class);
+        when(existingNetwork.getName()).thenReturn(ExporterLifecycleManager.NETWORK_NAME);
+        when(existingNetwork.getId()).thenReturn("old-bridge-net-id");
+        when(existingNetwork.getDriver()).thenReturn("bridge");
+        when(existingNetwork.isAttachable()).thenReturn(null);
+        var listNetworksCmd = mock(ListNetworksCmd.class);
+        when(dockerClient.listNetworksCmd()).thenReturn(listNetworksCmd);
+        when(listNetworksCmd.withNameFilter(anyString())).thenReturn(listNetworksCmd);
+        when(listNetworksCmd.exec()).thenReturn(List.of(existingNetwork));
+
+        var removeNetworkCmd = mock(RemoveNetworkCmd.class);
+        when(dockerClient.removeNetworkCmd("old-bridge-net-id")).thenReturn(removeNetworkCmd);
+
+        mockConnectToNetwork();
+        mockSwarmServiceAbsent();
+        mockSwarmServiceCreation();
+
+        manager.start();
+
+        verify(dockerClient).removeNetworkCmd("old-bridge-net-id");
+        verify(createNetworkCmd, org.mockito.Mockito.times(2)).withDriver("overlay");
     }
 
     @Test
@@ -416,6 +500,26 @@ class ExporterLifecycleManagerTest {
     private void mockContainerCreationAndStart(String cadvisorId, String nodeExporterId) {
         mockCreateAndStart("gcr.io/cadvisor/cadvisor:v0.51.0", cadvisorId);
         mockCreateAndStart("prom/node-exporter:v1.9.0", nodeExporterId);
+    }
+
+    private void mockRunningContainerState(String containerId) {
+        var inspectCmd = mock(InspectContainerCmd.class);
+        when(dockerClient.inspectContainerCmd(containerId)).thenReturn(inspectCmd);
+        var inspectResponse = mock(InspectContainerResponse.class);
+        when(inspectCmd.exec()).thenReturn(inspectResponse);
+        var state = mock(InspectContainerResponse.ContainerState.class);
+        when(inspectResponse.getState()).thenReturn(state);
+        when(state.getRunning()).thenReturn(true);
+    }
+
+    private void mockStoppedContainerState(String containerId) {
+        var inspectCmd = mock(InspectContainerCmd.class);
+        when(dockerClient.inspectContainerCmd(containerId)).thenReturn(inspectCmd);
+        var inspectResponse = mock(InspectContainerResponse.class);
+        when(inspectCmd.exec()).thenReturn(inspectResponse);
+        var state = mock(InspectContainerResponse.ContainerState.class);
+        when(inspectResponse.getState()).thenReturn(state);
+        when(state.getRunning()).thenReturn(false);
     }
 
     private void mockCreateAndStart(String image, String containerId) {

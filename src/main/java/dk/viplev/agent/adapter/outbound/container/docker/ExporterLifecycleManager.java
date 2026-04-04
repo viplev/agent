@@ -97,35 +97,63 @@ public class ExporterLifecycleManager {
     }
 
     private String ensureNetworkExists(boolean swarm) {
+        String requiredDriver = swarm ? "overlay" : "bridge";
         try {
-            String driver = swarm ? "overlay" : "bridge";
             var cmd = dockerClient.createNetworkCmd()
                     .withName(NETWORK_NAME)
-                    .withDriver(driver);
+                    .withDriver(requiredDriver);
             if (swarm) {
                 cmd.withAttachable(true);
             }
             var response = cmd.exec();
-            log.info("Created Docker {} network '{}'", driver, NETWORK_NAME);
+            log.info("Created Docker {} network '{}'", requiredDriver, NETWORK_NAME);
             return response.getId();
         } catch (DockerException e) {
             if (e.getMessage() != null && e.getMessage().contains("already exists")) {
-                log.debug("Docker network '{}' already exists", NETWORK_NAME);
-                return findNetworkId(NETWORK_NAME);
+                return validateOrRecreateNetwork(requiredDriver, swarm);
             }
             throw new ContainerRuntimeException("Failed to create Docker network " + NETWORK_NAME, e);
         }
     }
 
-    private String findNetworkId(String networkName) {
+    private String validateOrRecreateNetwork(String requiredDriver, boolean swarm) {
+        Network existing = findNetwork(NETWORK_NAME);
+        if (existing == null) {
+            throw new ContainerRuntimeException("Network '" + NETWORK_NAME + "' not found after creation conflict");
+        }
+        boolean driverMatches = requiredDriver.equals(existing.getDriver());
+        boolean attachableMatches = !swarm || Boolean.TRUE.equals(existing.isAttachable());
+        if (driverMatches && attachableMatches) {
+            log.debug("Docker network '{}' already exists with correct driver '{}', reusing", NETWORK_NAME, requiredDriver);
+            return existing.getId();
+        }
+        log.warn("Docker network '{}' exists with driver '{}' (required: '{}'), removing and recreating",
+                NETWORK_NAME, existing.getDriver(), requiredDriver);
+        try {
+            dockerClient.removeNetworkCmd(existing.getId()).exec();
+        } catch (DockerException removeEx) {
+            throw new ContainerRuntimeException(
+                    "Network '" + NETWORK_NAME + "' has wrong driver ('" + existing.getDriver() +
+                    "' vs required '" + requiredDriver + "') and could not be removed — remove it manually and restart the agent",
+                    removeEx);
+        }
+        var cmd = dockerClient.createNetworkCmd().withName(NETWORK_NAME).withDriver(requiredDriver);
+        if (swarm) {
+            cmd.withAttachable(true);
+        }
+        String newId = cmd.exec().getId();
+        log.info("Recreated Docker {} network '{}'", requiredDriver, NETWORK_NAME);
+        return newId;
+    }
+
+    private Network findNetwork(String networkName) {
         return dockerClient.listNetworksCmd()
                 .withNameFilter(networkName)
                 .exec()
                 .stream()
                 .filter(n -> networkName.equals(n.getName()))
-                .map(Network::getId)
                 .findFirst()
-                .orElseThrow(() -> new ContainerRuntimeException("Network '" + networkName + "' not found after creation"));
+                .orElse(null);
     }
 
     private void connectAgentToNetwork(String networkId) {
@@ -154,8 +182,15 @@ public class ExporterLifecycleManager {
     }
 
     private void startContainerIfAbsent(String containerName, String image, HostConfig hostConfig, List<String> command) {
-        if (isContainerPresent(containerName)) {
-            log.info("Container '{}' already exists, skipping", containerName);
+        String existingId = findContainerIdByName(containerName);
+        if (existingId != null) {
+            var state = dockerClient.inspectContainerCmd(existingId).exec().getState();
+            if (state != null && Boolean.TRUE.equals(state.getRunning())) {
+                log.info("Container '{}' already exists and is running, skipping", containerName);
+                return;
+            }
+            dockerClient.startContainerCmd(existingId).exec();
+            log.info("Started existing stopped container '{}' (id: {})", containerName, existingId);
             return;
         }
 
@@ -170,6 +205,19 @@ public class ExporterLifecycleManager {
         String containerId = createCmd.exec().getId();
         dockerClient.startContainerCmd(containerId).exec();
         log.info("Started container '{}' with image '{}' (id: {})", containerName, image, containerId);
+    }
+
+    private String findContainerIdByName(String containerName) {
+        return dockerClient.listContainersCmd()
+                .withNameFilter(List.of(containerName))
+                .withShowAll(true)
+                .exec()
+                .stream()
+                .filter(c -> c.getNames() != null &&
+                        Arrays.stream(c.getNames()).anyMatch(name -> name.equals("/" + containerName) || name.equals(containerName)))
+                .map(c -> c.getId())
+                .findFirst()
+                .orElse(null);
     }
 
     private void pullImageIfAbsent(String image) {
@@ -190,15 +238,6 @@ public class ExporterLifecycleManager {
         }
     }
 
-    private boolean isContainerPresent(String containerName) {
-        return dockerClient.listContainersCmd()
-                .withNameFilter(List.of(containerName))
-                .withShowAll(true)
-                .exec()
-                .stream()
-                .flatMap(c -> Arrays.stream(c.getNames()))
-                .anyMatch(name -> name.equals("/" + containerName) || name.equals(containerName));
-    }
 
     private void removeContainer(String containerName) {
         try {
