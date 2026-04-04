@@ -260,6 +260,7 @@ class ExporterLifecycleManagerTest {
         when(networkResponse.getId()).thenReturn("net-id");
         when(createNetworkCmd.exec()).thenReturn(networkResponse);
 
+        mockConnectToNetwork();
         mockSwarmServiceAbsent();
         mockSwarmServiceCreation();
 
@@ -270,9 +271,23 @@ class ExporterLifecycleManagerTest {
     }
 
     @Test
+    void startup_swarmMode_connectsAgentToNetwork() {
+        doReturn(true).when(manager).isSwarmActive();
+        mockSwarmNetworkCreation();
+        mockConnectToNetwork();
+        mockSwarmServiceAbsent();
+        mockSwarmServiceCreation();
+
+        manager.start();
+
+        verify(dockerClient).connectToNetworkCmd();
+    }
+
+    @Test
     void startup_swarmMode_createsGlobalServices() {
         doReturn(true).when(manager).isSwarmActive();
         mockSwarmNetworkCreation();
+        mockConnectToNetwork();
         mockSwarmServiceAbsent();
 
         var createServiceCmd = mock(CreateServiceCmd.class);
@@ -298,6 +313,7 @@ class ExporterLifecycleManagerTest {
     void startup_swarmMode_skipsServiceIfAlreadyPresent() {
         doReturn(true).when(manager).isSwarmActive();
         mockSwarmNetworkCreation();
+        mockConnectToNetwork();
 
         var listServicesCmd = mock(ListServicesCmd.class);
         when(dockerClient.listServicesCmd()).thenReturn(listServicesCmd);

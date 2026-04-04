@@ -62,6 +62,7 @@ public class ExporterLifecycleManager {
         String networkId = ensureNetworkExists(swarm);
 
         if (swarm) {
+            connectAgentToNetwork(networkId);
             startSwarmServiceIfAbsent(CADVISOR_CONTAINER_NAME, cadvisorImage,
                     buildCadvisorMounts(), List.of());
             startSwarmServiceIfAbsent(NODE_EXPORTER_CONTAINER_NAME, nodeExporterImage,
