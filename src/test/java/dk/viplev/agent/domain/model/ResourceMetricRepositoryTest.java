@@ -27,6 +27,7 @@ class ResourceMetricRepositoryTest {
                 .collectedAt(LocalDateTime.now())
                 .targetType(TargetType.HOST)
                 .targetName("machine-1")
+                .machineId("machine-1")
                 .cpuPercentage(45.2)
                 .memoryUsageBytes(1024.0)
                 .memoryLimitBytes(2048.0)
@@ -51,6 +52,7 @@ class ResourceMetricRepositoryTest {
                 .collectedAt(now.minusSeconds(2))
                 .targetType(TargetType.HOST)
                 .targetName("machine-1")
+                .machineId("machine-1")
                 .cpuPercentage(10.0)
                 .build();
 
@@ -58,6 +60,7 @@ class ResourceMetricRepositoryTest {
                 .collectedAt(now.minusSeconds(1))
                 .targetType(TargetType.SERVICE)
                 .targetName("api-service")
+                .machineId("machine-1")
                 .cpuPercentage(20.0)
                 .build();
 
@@ -65,6 +68,7 @@ class ResourceMetricRepositoryTest {
                 .collectedAt(now)
                 .targetType(TargetType.HOST)
                 .targetName("machine-1")
+                .machineId("machine-1")
                 .cpuPercentage(30.0)
                 .flushed(true)
                 .build();

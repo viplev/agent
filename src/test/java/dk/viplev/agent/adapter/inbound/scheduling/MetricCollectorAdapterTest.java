@@ -89,4 +89,32 @@ class MetricCollectorAdapterTest {
         verify(metricCollectionUseCase, never()).startCollection(any(), any());
         verify(metricCollectionUseCase, never()).stopCollection();
     }
+
+    @Test
+    void handleMessage_pendingStartWithNullBenchmarkId_ignoresMessage() {
+        var message = new MessageDTO()
+                .benchmarkId(null)
+                .runId(RUN_ID)
+                .messageType(MessageDTO.MessageTypeEnum.PENDING_START);
+        when(viplevApiPort.pollMessages()).thenReturn(List.of(message));
+
+        adapter.pollMessagesSafely();
+
+        verify(metricCollectionUseCase, never()).startCollection(any(), any());
+        verify(viplevApiPort, never()).updateRunStatus(any(), any(), any());
+    }
+
+    @Test
+    void handleMessage_pendingStartWithNullRunId_ignoresMessage() {
+        var message = new MessageDTO()
+                .benchmarkId(BENCHMARK_ID)
+                .runId(null)
+                .messageType(MessageDTO.MessageTypeEnum.PENDING_START);
+        when(viplevApiPort.pollMessages()).thenReturn(List.of(message));
+
+        adapter.pollMessagesSafely();
+
+        verify(metricCollectionUseCase, never()).startCollection(any(), any());
+        verify(viplevApiPort, never()).updateRunStatus(any(), any(), any());
+    }
 }

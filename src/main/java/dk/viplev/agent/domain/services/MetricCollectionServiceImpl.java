@@ -208,6 +208,30 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
                 return;
             }
 
+            if (benchmarkId == null || runId == null) {
+                log.warn("flushMetrics called before startCollection (benchmarkId={}, runId={}); skipping flush",
+                        benchmarkId, runId);
+                return;
+            }
+
+            // Filter out legacy metrics with null machineId
+            var nullMachineIdMetrics = unflushed.stream()
+                    .filter(m -> m.getMachineId() == null)
+                    .toList();
+            if (!nullMachineIdMetrics.isEmpty()) {
+                log.warn("Found {} metrics with null machineId; marking as flushed to expire legacy rows",
+                        nullMachineIdMetrics.size());
+                nullMachineIdMetrics.forEach(m -> m.setFlushed(true));
+                resourceMetricRepository.saveAll(nullMachineIdMetrics);
+            }
+
+            unflushed = unflushed.stream()
+                    .filter(m -> m.getMachineId() != null)
+                    .toList();
+            if (unflushed.isEmpty()) {
+                return;
+            }
+
             // Group host metrics by machineId
             var hostMetrics = unflushed.stream()
                     .filter(m -> m.getTargetType() == TargetType.HOST)

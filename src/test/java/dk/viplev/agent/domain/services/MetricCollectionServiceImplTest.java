@@ -147,6 +147,7 @@ class MetricCollectionServiceImplTest {
                 .thenReturn(List.of(hostMetric, serviceMetric1, serviceMetric2));
         when(resourceMetricRepository.saveAll(any())).thenAnswer(inv -> inv.getArgument(0));
 
+        service.startCollection(BENCHMARK_ID, RUN_ID);
         service.flushMetrics();
 
         var captor = ArgumentCaptor.forClass(MetricResourceDTO.class);
@@ -174,6 +175,7 @@ class MetricCollectionServiceImplTest {
                 .thenReturn(List.of(hostMetricAbc, hostMetricXyz, serviceAbcNginx, serviceXyzPostgres));
         when(resourceMetricRepository.saveAll(any())).thenAnswer(inv -> inv.getArgument(0));
 
+        service.startCollection(BENCHMARK_ID, RUN_ID);
         service.flushMetrics();
 
         var captor = ArgumentCaptor.forClass(MetricResourceDTO.class);
@@ -203,6 +205,7 @@ class MetricCollectionServiceImplTest {
                 .thenReturn(List.of(serviceMetric));
         when(resourceMetricRepository.saveAll(any())).thenAnswer(inv -> inv.getArgument(0));
 
+        service.startCollection(BENCHMARK_ID, RUN_ID);
         service.flushMetrics();
 
         var captor = ArgumentCaptor.forClass(MetricResourceDTO.class);
@@ -226,6 +229,7 @@ class MetricCollectionServiceImplTest {
         doThrow(new RuntimeException("API unavailable"))
                 .when(viplevApiPort).sendResourceMetrics(any(), any(), any());
 
+        service.startCollection(BENCHMARK_ID, RUN_ID);
         service.flushMetrics();
 
         assertThat(metric.isFlushed()).isFalse();
@@ -326,6 +330,40 @@ class MetricCollectionServiceImplTest {
         assertThat(serviceMetric.getTargetName()).isEqualTo("abc123");
     }
 
+    @Test
+    void flushMetrics_nullBenchmarkId_skipsFlush() {
+        when(resourceMetricRepository.findByFlushedFalseOrderByCollectedAtAsc())
+                .thenReturn(List.of(hostMetric("machine-abc")));
+
+        // Do NOT call startCollection — benchmarkId and runId remain null
+        service.flushMetrics();
+
+        verify(viplevApiPort, never()).sendResourceMetrics(any(), any(), any());
+    }
+
+    @Test
+    void flushMetrics_metricsWithNullMachineId_expiresLegacyRows() {
+        var nullMachineIdMetric = nullMachineIdMetric();
+        var validMetric = hostMetric("machine-abc");
+
+        when(resourceMetricRepository.findByFlushedFalseOrderByCollectedAtAsc())
+                .thenReturn(new ArrayList<>(List.of(nullMachineIdMetric, validMetric)));
+        when(resourceMetricRepository.saveAll(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        service.startCollection(BENCHMARK_ID, RUN_ID);
+        service.flushMetrics();
+
+        // The null-machineId metric should have been marked flushed
+        assertThat(nullMachineIdMetric.isFlushed()).isTrue();
+
+        // API should be called only with the valid metric
+        var captor = ArgumentCaptor.forClass(MetricResourceDTO.class);
+        verify(viplevApiPort).sendResourceMetrics(any(), any(), captor.capture());
+        var dto = captor.getValue();
+        assertThat(dto.getHosts()).hasSize(1);
+        assertThat(dto.getHosts().getFirst().getMachineId()).isEqualTo("machine-abc");
+    }
+
     // --- Helpers ---
 
     private ResourceMetric hostMetric(String machineId) {
@@ -357,6 +395,22 @@ class MetricCollectionServiceImplTest {
                 .networkOutBytes(10_000.0)
                 .blockInBytes(200_000.0)
                 .blockOutBytes(100_000.0)
+                .build();
+    }
+
+    private ResourceMetric nullMachineIdMetric() {
+        return ResourceMetric.builder()
+                .collectedAt(LocalDateTime.now())
+                .targetType(TargetType.HOST)
+                .targetName("legacy-host")
+                .machineId(null)
+                .cpuPercentage(5.0)
+                .memoryUsageBytes(1_000_000_000.0)
+                .memoryLimitBytes(2_000_000_000.0)
+                .networkInBytes(10_000.0)
+                .networkOutBytes(5_000.0)
+                .blockInBytes(100_000.0)
+                .blockOutBytes(50_000.0)
                 .build();
     }
 }

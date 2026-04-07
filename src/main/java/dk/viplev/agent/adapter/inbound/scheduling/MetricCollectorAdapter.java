@@ -79,6 +79,12 @@ public class MetricCollectorAdapter {
         UUID benchmarkId = message.getBenchmarkId();
         UUID runId = message.getRunId();
 
+        if (benchmarkId == null || runId == null) {
+            log.warn("Received message of type {} with null benchmarkId or runId; ignoring",
+                    message.getMessageType());
+            return;
+        }
+
         switch (message.getMessageType()) {
             case PENDING_START -> {
                 log.info("Received PENDING_START for benchmark={} run={}", benchmarkId, runId);
