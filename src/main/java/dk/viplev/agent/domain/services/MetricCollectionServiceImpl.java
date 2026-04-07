@@ -15,17 +15,21 @@ import dk.viplev.agent.port.outbound.metrics.NodeExporterPort;
 import dk.viplev.agent.port.outbound.rest.ViplevApiPort;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 @Service
@@ -33,6 +37,7 @@ import java.util.stream.Collectors;
 public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
 
     private static final Logger log = LoggerFactory.getLogger(MetricCollectionServiceImpl.class);
+    private static final AtomicInteger THREAD_COUNTER = new AtomicInteger(0);
 
     private final NodeExporterPort nodeExporterPort;
     private final CadvisorPort cadvisorPort;
@@ -41,10 +46,15 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
     private final ResourceMetricRepository resourceMetricRepository;
     private final ViplevApiPort viplevApiPort;
     private final ResourceMetricMapper resourceMetricMapper;
+    private final int nodeExporterPortNumber;
+    private final int cadvisorPortNumber;
+    @Nullable
+    private final ScheduledExecutorService executorOverride;
 
     private volatile UUID benchmarkId;
     private volatile UUID runId;
     private volatile ScheduledExecutorService executor;
+    private volatile String localMachineId;
 
     public MetricCollectionServiceImpl(NodeExporterPort nodeExporterPort,
                                        CadvisorPort cadvisorPort,
@@ -52,7 +62,10 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
                                        NodeDiscoveryPort nodeDiscoveryPort,
                                        ResourceMetricRepository resourceMetricRepository,
                                        ViplevApiPort viplevApiPort,
-                                       ResourceMetricMapper resourceMetricMapper) {
+                                       ResourceMetricMapper resourceMetricMapper,
+                                       @Value("${agent.node-exporter-port}") int nodeExporterPortNumber,
+                                       @Value("${agent.cadvisor-port}") int cadvisorPortNumber,
+                                       @Nullable ScheduledExecutorService executorOverride) {
         this.nodeExporterPort = nodeExporterPort;
         this.cadvisorPort = cadvisorPort;
         this.containerPort = containerPort;
@@ -60,6 +73,9 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
         this.resourceMetricRepository = resourceMetricRepository;
         this.viplevApiPort = viplevApiPort;
         this.resourceMetricMapper = resourceMetricMapper;
+        this.nodeExporterPortNumber = nodeExporterPortNumber;
+        this.cadvisorPortNumber = cadvisorPortNumber;
+        this.executorOverride = executorOverride;
     }
 
     @Override
@@ -73,11 +89,15 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
         this.benchmarkId = benchmarkId;
         this.runId = runId;
 
-        executor = Executors.newScheduledThreadPool(2, r -> {
-            Thread t = new Thread(r, "metric-collector");
-            t.setDaemon(true);
-            return t;
-        });
+        if (executorOverride != null) {
+            executor = executorOverride;
+        } else {
+            executor = Executors.newScheduledThreadPool(2, r -> {
+                Thread t = new Thread(r, "metric-collector-" + THREAD_COUNTER.getAndIncrement());
+                t.setDaemon(true);
+                return t;
+            });
+        }
 
         executor.scheduleAtFixedRate(this::collectMetrics, 0, 1, TimeUnit.SECONDS);
         executor.scheduleAtFixedRate(this::flushMetrics, 5, 5, TimeUnit.SECONDS);
@@ -93,6 +113,14 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
         }
 
         executor.shutdown();
+        try {
+            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                executor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            executor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
         executor = null;
 
         flushMetrics();
@@ -107,15 +135,18 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
         try {
             var nodes = nodeDiscoveryPort.discoverNodes();
 
+            String localId = getLocalMachineId();
+
             for (var node : nodes) {
-                String nodeExporterUrl = "http://" + node.ipAddress() + ":9100";
-                String cadvisorUrl = "http://" + node.ipAddress() + ":8080";
+                String nodeExporterUrl = "http://" + node.ipAddress() + ":" + nodeExporterPortNumber;
+                String cadvisorUrl = "http://" + node.ipAddress() + ":" + cadvisorPortNumber;
                 try {
                     var hostStats = nodeExporterPort.scrapeHostStats(nodeExporterUrl);
                     var hostMetric = ResourceMetric.builder()
                             .collectedAt(LocalDateTime.now())
                             .targetType(TargetType.HOST)
                             .targetName(node.machineId())
+                            .machineId(node.machineId())
                             .cpuPercentage(hostStats.cpuPercentage())
                             .memoryUsageBytes((double) hostStats.memoryUsageBytes())
                             .memoryLimitBytes((double) hostStats.memoryLimitBytes())
@@ -131,9 +162,15 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
 
                 try {
                     var containerStatsMap = cadvisorPort.scrapeAllContainerStats(cadvisorUrl);
-                    var containers = containerPort.listContainers();
-                    var idToName = containers.stream()
-                            .collect(Collectors.toMap(c -> c.id(), c -> c.name()));
+
+                    Map<String, String> idToName;
+                    if (node.machineId().equals(localId)) {
+                        var containers = containerPort.listContainers();
+                        idToName = containers.stream()
+                                .collect(Collectors.toMap(c -> c.id(), c -> c.name()));
+                    } else {
+                        idToName = Map.of();
+                    }
 
                     for (var entry : containerStatsMap.entrySet()) {
                         var containerId = entry.getKey();
@@ -144,6 +181,7 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
                                 .collectedAt(LocalDateTime.now())
                                 .targetType(TargetType.SERVICE)
                                 .targetName(containerName)
+                                .machineId(node.machineId())
                                 .cpuPercentage(stats.cpuPercentage())
                                 .memoryUsageBytes((double) stats.memoryUsageBytes())
                                 .memoryLimitBytes((double) stats.memoryLimitBytes())
@@ -170,31 +208,60 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
                 return;
             }
 
+            // Group host metrics by machineId
             var hostMetrics = unflushed.stream()
                     .filter(m -> m.getTargetType() == TargetType.HOST)
-                    .collect(Collectors.groupingBy(ResourceMetric::getTargetName, LinkedHashMap::new, Collectors.toList()));
+                    .collect(Collectors.groupingBy(ResourceMetric::getMachineId, LinkedHashMap::new, Collectors.toList()));
 
+            // Group service metrics first by machineId, then by targetName
             var serviceMetrics = unflushed.stream()
                     .filter(m -> m.getTargetType() == TargetType.SERVICE)
-                    .collect(Collectors.groupingBy(ResourceMetric::getTargetName, LinkedHashMap::new, Collectors.toList()));
-
-            List<MetricResourceServiceDTO> serviceDTOs = serviceMetrics.entrySet().stream()
-                    .map(e -> new MetricResourceServiceDTO()
-                            .serviceName(e.getKey())
-                            .metrics(resourceMetricMapper.toDataPoints(e.getValue())))
-                    .toList();
+                    .collect(Collectors.groupingBy(
+                            ResourceMetric::getMachineId,
+                            LinkedHashMap::new,
+                            Collectors.groupingBy(ResourceMetric::getTargetName, LinkedHashMap::new, Collectors.toList())));
 
             List<MetricResourceNodeDTO> nodeDTOs = new ArrayList<>();
+
+            // Build node DTOs from host metrics, attaching only services with the same machineId
             for (var entry : hostMetrics.entrySet()) {
+                String machineId = entry.getKey();
+                Map<String, List<ResourceMetric>> servicesForNode = serviceMetrics.getOrDefault(machineId, new LinkedHashMap<>());
+
+                List<MetricResourceServiceDTO> serviceDTOs = servicesForNode.entrySet().stream()
+                        .map(e -> new MetricResourceServiceDTO()
+                                .serviceName(e.getKey())
+                                .metrics(resourceMetricMapper.toDataPoints(e.getValue())))
+                        .toList();
+
                 var nodeDTO = new MetricResourceNodeDTO()
-                        .machineId(entry.getKey())
+                        .machineId(machineId)
                         .metrics(resourceMetricMapper.toDataPoints(entry.getValue()))
                         .services(serviceDTOs);
                 nodeDTOs.add(nodeDTO);
             }
 
-            if (nodeDTOs.isEmpty() && !serviceDTOs.isEmpty()) {
-                log.warn("Service metrics present but no host metrics to attach them to; skipping flush");
+            // For service metrics whose machineId has no corresponding host metric, create orphan node DTOs
+            for (var entry : serviceMetrics.entrySet()) {
+                String machineId = entry.getKey();
+                if (hostMetrics.containsKey(machineId)) {
+                    continue;
+                }
+                List<MetricResourceServiceDTO> serviceDTOs = entry.getValue().entrySet().stream()
+                        .map(e -> new MetricResourceServiceDTO()
+                                .serviceName(e.getKey())
+                                .metrics(resourceMetricMapper.toDataPoints(e.getValue())))
+                        .toList();
+
+                var nodeDTO = new MetricResourceNodeDTO()
+                        .machineId(machineId)
+                        .metrics(List.of())
+                        .services(serviceDTOs);
+                nodeDTOs.add(nodeDTO);
+            }
+
+            if (nodeDTOs.isEmpty()) {
+                log.warn("No metrics to flush despite unflushed records; skipping flush");
                 return;
             }
 
@@ -211,5 +278,12 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
         } catch (Exception e) {
             log.warn("Unexpected error in flushMetrics", e);
         }
+    }
+
+    private String getLocalMachineId() {
+        if (localMachineId == null) {
+            localMachineId = nodeDiscoveryPort.getLocalNodeId();
+        }
+        return localMachineId;
     }
 }

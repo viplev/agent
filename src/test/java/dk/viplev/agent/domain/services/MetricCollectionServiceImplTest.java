@@ -14,7 +14,6 @@ import dk.viplev.agent.port.outbound.discovery.NodeDiscoveryPort;
 import dk.viplev.agent.port.outbound.metrics.CadvisorPort;
 import dk.viplev.agent.port.outbound.metrics.NodeExporterPort;
 import dk.viplev.agent.port.outbound.rest.ViplevApiPort;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -28,13 +27,19 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -63,6 +68,10 @@ class MetricCollectionServiceImplTest {
 
     private MetricCollectionServiceImpl service;
 
+    // Captures runnables submitted to scheduleAtFixedRate so tests can invoke them directly
+    private final List<Runnable> scheduledRunnables = new ArrayList<>();
+    private ScheduledExecutorService mockExecutor;
+
     private static final UUID BENCHMARK_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
     private static final UUID RUN_ID = UUID.fromString("22222222-2222-2222-2222-222222222222");
 
@@ -76,20 +85,26 @@ class MetricCollectionServiceImplTest {
             10.0, 512_000_000L, 1_000_000_000L, 20_000L, 10_000L, 200_000L, 100_000L);
 
     @BeforeEach
+    @SuppressWarnings("unchecked")
     void setUp() {
+        scheduledRunnables.clear();
+        mockExecutor = mock(ScheduledExecutorService.class);
+        lenient().when(mockExecutor.isShutdown()).thenReturn(false);
+        lenient().doAnswer(inv -> {
+            scheduledRunnables.add(inv.getArgument(0));
+            return mock(ScheduledFuture.class);
+        }).when(mockExecutor).scheduleAtFixedRate(any(Runnable.class), anyLong(), anyLong(), any(TimeUnit.class));
+
         service = new MetricCollectionServiceImpl(
                 nodeExporterPort, cadvisorPort, containerPort,
-                nodeDiscoveryPort, resourceMetricRepository, viplevApiPort, resourceMetricMapper);
-    }
-
-    @AfterEach
-    void tearDown() {
-        service.stopCollection();
+                nodeDiscoveryPort, resourceMetricRepository, viplevApiPort, resourceMetricMapper,
+                9100, 8080, mockExecutor);
     }
 
     @Test
     void startCollection_schedulesCollectionAndFlushTasks() {
         when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(TEST_NODE));
+        when(nodeDiscoveryPort.getLocalNodeId()).thenReturn("machine-abc");
         when(nodeExporterPort.scrapeHostStats(anyString())).thenReturn(SAMPLE_HOST_STATS);
         when(cadvisorPort.scrapeAllContainerStats(anyString())).thenReturn(Map.of());
         when(containerPort.listContainers()).thenReturn(List.of());
@@ -97,22 +112,24 @@ class MetricCollectionServiceImplTest {
 
         service.startCollection(BENCHMARK_ID, RUN_ID);
 
-        verify(nodeExporterPort, timeout(3000).atLeastOnce()).scrapeHostStats(anyString());
-        verify(cadvisorPort, timeout(3000).atLeastOnce()).scrapeAllContainerStats(anyString());
+        // Two runnables must be registered: collectMetrics and flushMetrics
+        assertThat(scheduledRunnables).hasSize(2);
+
+        // Invoke collectMetrics directly (deterministic, no timeout needed)
+        scheduledRunnables.get(0).run();
+
+        verify(nodeExporterPort).scrapeHostStats("http://192.168.1.10:9100");
+        verify(cadvisorPort).scrapeAllContainerStats("http://192.168.1.10:8080");
     }
 
     @Test
     void stopCollection_performsFinalFlush() {
         var unflushedMetrics = List.of(
                 hostMetric("machine-abc"),
-                serviceMetric("nginx")
+                serviceMetric("nginx", "machine-abc")
         );
-        when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(TEST_NODE));
-        when(nodeExporterPort.scrapeHostStats(anyString())).thenReturn(SAMPLE_HOST_STATS);
-        when(cadvisorPort.scrapeAllContainerStats(anyString())).thenReturn(Map.of());
-        when(containerPort.listContainers()).thenReturn(List.of());
-        when(resourceMetricRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(resourceMetricRepository.findByFlushedFalseOrderByCollectedAtAsc()).thenReturn(unflushedMetrics);
+        when(resourceMetricRepository.saveAll(any())).thenAnswer(inv -> inv.getArgument(0));
 
         service.startCollection(BENCHMARK_ID, RUN_ID);
         service.stopCollection();
@@ -123,8 +140,8 @@ class MetricCollectionServiceImplTest {
     @Test
     void flushMetrics_groupsByHostAndService() {
         var hostMetric = hostMetric("machine-abc");
-        var serviceMetric1 = serviceMetric("nginx");
-        var serviceMetric2 = serviceMetric("redis");
+        var serviceMetric1 = serviceMetric("nginx", "machine-abc");
+        var serviceMetric2 = serviceMetric("redis", "machine-abc");
 
         when(resourceMetricRepository.findByFlushedFalseOrderByCollectedAtAsc())
                 .thenReturn(List.of(hostMetric, serviceMetric1, serviceMetric2));
@@ -144,6 +161,61 @@ class MetricCollectionServiceImplTest {
         assertThat(nodeDTO.getServices()).hasSize(2);
         assertThat(nodeDTO.getServices().stream().map(s -> s.getServiceName()))
                 .containsExactlyInAnyOrder("nginx", "redis");
+    }
+
+    @Test
+    void flushMetrics_multiNode_servicesGroupedPerHost() {
+        var hostMetricAbc = hostMetric("machine-abc");
+        var hostMetricXyz = hostMetric("machine-xyz");
+        var serviceAbcNginx = serviceMetric("nginx", "machine-abc");
+        var serviceXyzPostgres = serviceMetric("postgres", "machine-xyz");
+
+        when(resourceMetricRepository.findByFlushedFalseOrderByCollectedAtAsc())
+                .thenReturn(List.of(hostMetricAbc, hostMetricXyz, serviceAbcNginx, serviceXyzPostgres));
+        when(resourceMetricRepository.saveAll(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        service.flushMetrics();
+
+        var captor = ArgumentCaptor.forClass(MetricResourceDTO.class);
+        verify(viplevApiPort).sendResourceMetrics(any(), any(), captor.capture());
+
+        var dto = captor.getValue();
+        assertThat(dto.getHosts()).hasSize(2);
+
+        var nodeDTOAbc = dto.getHosts().stream()
+                .filter(n -> "machine-abc".equals(n.getMachineId()))
+                .findFirst().orElseThrow();
+        assertThat(nodeDTOAbc.getServices()).hasSize(1);
+        assertThat(nodeDTOAbc.getServices().getFirst().getServiceName()).isEqualTo("nginx");
+
+        var nodeDTOXyz = dto.getHosts().stream()
+                .filter(n -> "machine-xyz".equals(n.getMachineId()))
+                .findFirst().orElseThrow();
+        assertThat(nodeDTOXyz.getServices()).hasSize(1);
+        assertThat(nodeDTOXyz.getServices().getFirst().getServiceName()).isEqualTo("postgres");
+    }
+
+    @Test
+    void flushMetrics_serviceMetricsWithoutHostMetrics_stillFlushes() {
+        var serviceMetric = serviceMetric("nginx", "machine-abc");
+
+        when(resourceMetricRepository.findByFlushedFalseOrderByCollectedAtAsc())
+                .thenReturn(List.of(serviceMetric));
+        when(resourceMetricRepository.saveAll(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        service.flushMetrics();
+
+        var captor = ArgumentCaptor.forClass(MetricResourceDTO.class);
+        verify(viplevApiPort).sendResourceMetrics(any(), any(), captor.capture());
+
+        var dto = captor.getValue();
+        assertThat(dto.getHosts()).hasSize(1);
+
+        var nodeDTO = dto.getHosts().getFirst();
+        assertThat(nodeDTO.getMachineId()).isEqualTo("machine-abc");
+        assertThat(nodeDTO.getMetrics()).isEmpty();
+        assertThat(nodeDTO.getServices()).hasSize(1);
+        assertThat(nodeDTO.getServices().getFirst().getServiceName()).isEqualTo("nginx");
     }
 
     @Test
@@ -175,6 +247,7 @@ class MetricCollectionServiceImplTest {
         var container = new ContainerInfo("abc123", "nginx", "nginx:latest", "sha256:aaa",
                 "running", null, null, null, null);
         when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(TEST_NODE));
+        when(nodeDiscoveryPort.getLocalNodeId()).thenReturn("machine-abc");
         when(nodeExporterPort.scrapeHostStats(anyString())).thenReturn(SAMPLE_HOST_STATS);
         when(cadvisorPort.scrapeAllContainerStats(anyString()))
                 .thenReturn(Map.of("abc123", SAMPLE_CONTAINER_STATS));
@@ -197,34 +270,60 @@ class MetricCollectionServiceImplTest {
         assertThat(savedMetrics.stream()
                 .filter(m -> m.getTargetType() == TargetType.SERVICE)
                 .findFirst().get().getTargetName()).isEqualTo("nginx");
+
+        // Verify machineId is set on both metric types
+        assertThat(savedMetrics.stream()
+                .filter(m -> m.getTargetType() == TargetType.HOST)
+                .findFirst().get().getMachineId()).isEqualTo("machine-abc");
+        assertThat(savedMetrics.stream()
+                .filter(m -> m.getTargetType() == TargetType.SERVICE)
+                .findFirst().get().getMachineId()).isEqualTo("machine-abc");
     }
 
     @Test
     void collectMetrics_exceptionDoesNotStopScheduler() {
         when(nodeDiscoveryPort.discoverNodes())
-                .thenThrow(new RuntimeException("Node discovery failed"))
-                .thenReturn(List.of(TEST_NODE));
-        when(nodeExporterPort.scrapeHostStats(anyString())).thenReturn(SAMPLE_HOST_STATS);
-        when(cadvisorPort.scrapeAllContainerStats(anyString())).thenReturn(Map.of());
-        when(containerPort.listContainers()).thenReturn(List.of());
-        when(resourceMetricRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+                .thenThrow(new RuntimeException("Node discovery failed"));
 
-        service.startCollection(BENCHMARK_ID, RUN_ID);
-
-        // The second call should succeed; scrapeHostStats is called after the first failure is swallowed
-        verify(nodeExporterPort, timeout(3000).atLeastOnce()).scrapeHostStats(anyString());
+        // Should not throw
+        service.collectMetrics();
     }
 
     @Test
     void startCollection_doubleStart_logsWarning() {
-        when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(TEST_NODE));
-        when(nodeExporterPort.scrapeHostStats(anyString())).thenReturn(SAMPLE_HOST_STATS);
-        when(cadvisorPort.scrapeAllContainerStats(anyString())).thenReturn(Map.of());
-        when(containerPort.listContainers()).thenReturn(List.of());
-        when(resourceMetricRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
-
         service.startCollection(BENCHMARK_ID, RUN_ID);
         service.startCollection(BENCHMARK_ID, RUN_ID);  // should be a no-op, no exception
+
+        // scheduleAtFixedRate should only be called twice (from the first startCollection)
+        verify(mockExecutor, org.mockito.Mockito.times(2))
+                .scheduleAtFixedRate(any(), anyLong(), anyLong(), any());
+    }
+
+    @Test
+    void collectMetrics_remoteNode_usesContainerIdAsName() {
+        var remoteNode = new NodeInfo("machine-xyz", "remote-host", "10.0.0.2", "Linux", "5.15.0", 4, 8_000_000_000L);
+        when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(remoteNode));
+        when(nodeDiscoveryPort.getLocalNodeId()).thenReturn("machine-abc");
+        when(nodeExporterPort.scrapeHostStats(anyString())).thenReturn(SAMPLE_HOST_STATS);
+        when(cadvisorPort.scrapeAllContainerStats(anyString()))
+                .thenReturn(Map.of("abc123", SAMPLE_CONTAINER_STATS));
+
+        var savedMetrics = new ArrayList<ResourceMetric>();
+        when(resourceMetricRepository.save(any())).thenAnswer(inv -> {
+            savedMetrics.add(inv.getArgument(0));
+            return inv.getArgument(0);
+        });
+
+        service.collectMetrics();
+
+        // containerPort.listContainers() should NOT be called for a remote node
+        verify(containerPort, never()).listContainers();
+
+        // The service metric should use the container ID as the name
+        var serviceMetric = savedMetrics.stream()
+                .filter(m -> m.getTargetType() == TargetType.SERVICE)
+                .findFirst().orElseThrow();
+        assertThat(serviceMetric.getTargetName()).isEqualTo("abc123");
     }
 
     // --- Helpers ---
@@ -234,6 +333,7 @@ class MetricCollectionServiceImplTest {
                 .collectedAt(LocalDateTime.now())
                 .targetType(TargetType.HOST)
                 .targetName(machineId)
+                .machineId(machineId)
                 .cpuPercentage(25.0)
                 .memoryUsageBytes(4_000_000_000.0)
                 .memoryLimitBytes(8_000_000_000.0)
@@ -244,11 +344,12 @@ class MetricCollectionServiceImplTest {
                 .build();
     }
 
-    private ResourceMetric serviceMetric(String serviceName) {
+    private ResourceMetric serviceMetric(String serviceName, String machineId) {
         return ResourceMetric.builder()
                 .collectedAt(LocalDateTime.now())
                 .targetType(TargetType.SERVICE)
                 .targetName(serviceName)
+                .machineId(machineId)
                 .cpuPercentage(10.0)
                 .memoryUsageBytes(512_000_000.0)
                 .memoryLimitBytes(1_000_000_000.0)

@@ -29,6 +29,9 @@ public class ResourceMetric {
     @Column(name = "target_name", nullable = false)
     private String targetName;
 
+    @Column(name = "machine_id")
+    private String machineId;
+
     @Column(name = "cpu_percentage")
     private Double cpuPercentage;
 
