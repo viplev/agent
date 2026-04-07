@@ -214,15 +214,11 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
                 return;
             }
 
-            // Filter out legacy metrics with null machineId
-            var nullMachineIdMetrics = unflushed.stream()
-                    .filter(m -> m.getMachineId() == null)
-                    .toList();
-            if (!nullMachineIdMetrics.isEmpty()) {
-                log.warn("Found {} metrics with null machineId; marking as flushed to expire legacy rows",
-                        nullMachineIdMetrics.size());
-                nullMachineIdMetrics.forEach(m -> m.setFlushed(true));
-                resourceMetricRepository.saveAll(nullMachineIdMetrics);
+            // Filter out legacy metrics with null machineId and delete them
+            boolean hasNullMachineId = unflushed.stream().anyMatch(m -> m.getMachineId() == null);
+            if (hasNullMachineId) {
+                log.warn("Deleting legacy resource metrics with null machineId — these cannot be flushed");
+                resourceMetricRepository.deleteByMachineIdIsNull();
             }
 
             unflushed = unflushed.stream()

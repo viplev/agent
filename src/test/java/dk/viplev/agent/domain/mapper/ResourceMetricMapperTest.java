@@ -31,6 +31,7 @@ class ResourceMetricMapperTest {
                 .collectedAt(collectedAt)
                 .targetType(TargetType.HOST)
                 .targetName("machine-1")
+                .machineId("machine-1")
                 .cpuPercentage(45.5)
                 .memoryUsageBytes(1024.0)
                 .memoryLimitBytes(2048.0)
@@ -59,18 +60,21 @@ class ResourceMetricMapperTest {
                 .collectedAt(LocalDateTime.now())
                 .targetType(TargetType.HOST)
                 .targetName("machine-1")
+                .machineId("machine-1")
                 .cpuPercentage(10.0)
                 .build();
         var metric2 = ResourceMetric.builder()
                 .collectedAt(LocalDateTime.now())
                 .targetType(TargetType.SERVICE)
                 .targetName("nginx")
+                .machineId("machine-1")
                 .cpuPercentage(20.0)
                 .build();
         var metric3 = ResourceMetric.builder()
                 .collectedAt(LocalDateTime.now())
                 .targetType(TargetType.SERVICE)
                 .targetName("redis")
+                .machineId("machine-1")
                 .cpuPercentage(30.0)
                 .build();
 
@@ -88,6 +92,7 @@ class ResourceMetricMapperTest {
                 .collectedAt(LocalDateTime.now())
                 .targetType(TargetType.HOST)
                 .targetName("machine-1")
+                .machineId("machine-1")
                 .build();
 
         MetricDataPointDTO dto = mapper.toDataPoint(metric);

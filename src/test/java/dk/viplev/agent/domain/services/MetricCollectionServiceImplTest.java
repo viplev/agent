@@ -353,8 +353,8 @@ class MetricCollectionServiceImplTest {
         service.startCollection(BENCHMARK_ID, RUN_ID);
         service.flushMetrics();
 
-        // The null-machineId metric should have been marked flushed
-        assertThat(nullMachineIdMetric.isFlushed()).isTrue();
+        // The null-machineId metric should have been deleted via deleteByMachineIdIsNull
+        verify(resourceMetricRepository).deleteByMachineIdIsNull();
 
         // API should be called only with the valid metric
         var captor = ArgumentCaptor.forClass(MetricResourceDTO.class);
