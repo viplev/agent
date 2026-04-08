@@ -58,6 +58,7 @@ class MetricCollectorAdapterTest {
                 .runId(RUN_ID)
                 .messageType(MessageDTO.MessageTypeEnum.PENDING_START);
         when(viplevApiPort.pollMessages()).thenReturn(List.of(message));
+        when(metricCollectionUseCase.startCollection(BENCHMARK_ID, RUN_ID)).thenReturn(true);
 
         adapter.pollMessagesSafely();
 
@@ -72,11 +73,42 @@ class MetricCollectorAdapterTest {
                 .runId(RUN_ID)
                 .messageType(MessageDTO.MessageTypeEnum.PENDING_STOP);
         when(viplevApiPort.pollMessages()).thenReturn(List.of(message));
+        when(metricCollectionUseCase.stopCollection()).thenReturn(true);
 
         adapter.pollMessagesSafely();
 
         verify(metricCollectionUseCase).stopCollection();
         verify(viplevApiPort).updateRunStatus(any(), any(), any());
+    }
+
+    @Test
+    void polling_pendingStart_withoutStateTransition_doesNotUpdateRunStatus() {
+        var message = new MessageDTO()
+                .benchmarkId(BENCHMARK_ID)
+                .runId(RUN_ID)
+                .messageType(MessageDTO.MessageTypeEnum.PENDING_START);
+        when(viplevApiPort.pollMessages()).thenReturn(List.of(message));
+        when(metricCollectionUseCase.startCollection(BENCHMARK_ID, RUN_ID)).thenReturn(false);
+
+        adapter.pollMessagesSafely();
+
+        verify(metricCollectionUseCase).startCollection(BENCHMARK_ID, RUN_ID);
+        verify(viplevApiPort, never()).updateRunStatus(any(), any(), any());
+    }
+
+    @Test
+    void polling_pendingStop_withoutStateTransition_doesNotUpdateRunStatus() {
+        var message = new MessageDTO()
+                .benchmarkId(BENCHMARK_ID)
+                .runId(RUN_ID)
+                .messageType(MessageDTO.MessageTypeEnum.PENDING_STOP);
+        when(viplevApiPort.pollMessages()).thenReturn(List.of(message));
+        when(metricCollectionUseCase.stopCollection()).thenReturn(false);
+
+        adapter.pollMessagesSafely();
+
+        verify(metricCollectionUseCase).stopCollection();
+        verify(viplevApiPort, never()).updateRunStatus(any(), any(), any());
     }
 
     @Test

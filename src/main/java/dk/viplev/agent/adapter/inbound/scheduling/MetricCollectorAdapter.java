@@ -51,12 +51,12 @@ public class MetricCollectorAdapter {
         poller.shutdownNow();
     }
 
-    public void startCollection(UUID benchmarkId, UUID runId) {
-        metricCollectionUseCase.startCollection(benchmarkId, runId);
+    public boolean startCollection(UUID benchmarkId, UUID runId) {
+        return metricCollectionUseCase.startCollection(benchmarkId, runId);
     }
 
-    public void stopCollection() {
-        metricCollectionUseCase.stopCollection();
+    public boolean stopCollection() {
+        return metricCollectionUseCase.stopCollection();
     }
 
     void pollMessagesSafely() {
@@ -88,15 +88,25 @@ public class MetricCollectorAdapter {
         switch (message.getMessageType()) {
             case PENDING_START -> {
                 log.info("Received PENDING_START for benchmark={} run={}", benchmarkId, runId);
-                metricCollectionUseCase.startCollection(benchmarkId, runId);
-                viplevApiPort.updateRunStatus(benchmarkId, runId,
-                        new BenchmarkRunStatusUpdateDTO().status(BenchmarkRunStatusUpdateDTO.StatusEnum.STARTED));
+                boolean started = metricCollectionUseCase.startCollection(benchmarkId, runId);
+                if (started) {
+                    viplevApiPort.updateRunStatus(benchmarkId, runId,
+                            new BenchmarkRunStatusUpdateDTO().status(BenchmarkRunStatusUpdateDTO.StatusEnum.STARTED));
+                } else {
+                    log.warn("Ignoring PENDING_START status update because collection state did not transition for benchmark={} run={}",
+                            benchmarkId, runId);
+                }
             }
             case PENDING_STOP -> {
                 log.info("Received PENDING_STOP for benchmark={} run={}", benchmarkId, runId);
-                metricCollectionUseCase.stopCollection();
-                viplevApiPort.updateRunStatus(benchmarkId, runId,
-                        new BenchmarkRunStatusUpdateDTO().status(BenchmarkRunStatusUpdateDTO.StatusEnum.STOPPED));
+                boolean stopped = metricCollectionUseCase.stopCollection();
+                if (stopped) {
+                    viplevApiPort.updateRunStatus(benchmarkId, runId,
+                            new BenchmarkRunStatusUpdateDTO().status(BenchmarkRunStatusUpdateDTO.StatusEnum.STOPPED));
+                } else {
+                    log.warn("Ignoring PENDING_STOP status update because collection state did not transition for benchmark={} run={}",
+                            benchmarkId, runId);
+                }
             }
             default -> log.warn("Unknown message type: {}", message.getMessageType());
         }

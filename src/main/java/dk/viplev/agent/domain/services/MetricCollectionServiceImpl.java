@@ -79,11 +79,11 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
     }
 
     @Override
-    public synchronized void startCollection(UUID benchmarkId, UUID runId) {
+    public synchronized boolean startCollection(UUID benchmarkId, UUID runId) {
         if (executor != null && !executor.isShutdown()) {
             log.warn("Metric collection already running for benchmark={} run={}; ignoring startCollection request",
                     this.benchmarkId, this.runId);
-            return;
+            return false;
         }
 
         this.benchmarkId = benchmarkId;
@@ -103,13 +103,14 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
         executor.scheduleAtFixedRate(this::flushMetrics, 5, 5, TimeUnit.SECONDS);
 
         log.info("Metric collection started for benchmark={} run={}", benchmarkId, runId);
+        return true;
     }
 
     @Override
-    public synchronized void stopCollection() {
+    public synchronized boolean stopCollection() {
         if (executor == null || executor.isShutdown()) {
             log.warn("Metric collection is not running; ignoring stopCollection request");
-            return;
+            return false;
         }
 
         executor.shutdown();
@@ -129,6 +130,7 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
 
         this.benchmarkId = null;
         this.runId = null;
+        return true;
     }
 
     void collectMetrics() {

@@ -4,7 +4,7 @@ import java.util.UUID;
 
 public interface MetricCollectionUseCase {
 
-    void startCollection(UUID benchmarkId, UUID runId);
+    boolean startCollection(UUID benchmarkId, UUID runId);
 
-    void stopCollection();
+    boolean stopCollection();
 }
