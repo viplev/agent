@@ -18,5 +18,9 @@ public interface ContainerPort {
 
     void stopContainer(String containerId);
 
+    boolean isContainerRunning(String containerId);
+
+    Long getContainerExitCode(String containerId);
+
     void watchContainerEvents(Consumer<ContainerEvent> callback);
 }

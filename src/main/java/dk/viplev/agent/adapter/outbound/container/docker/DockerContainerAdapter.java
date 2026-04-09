@@ -114,6 +114,25 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
     }
 
     @Override
+    public boolean isContainerRunning(String containerId) {
+        return execute("check if container is running " + containerId, () -> {
+            InspectContainerResponse inspect = dockerClient.inspectContainerCmd(containerId).exec();
+            return inspect.getState() != null && Boolean.TRUE.equals(inspect.getState().getRunning());
+        });
+    }
+
+    @Override
+    public Long getContainerExitCode(String containerId) {
+        return execute("get container exit code " + containerId, () -> {
+            InspectContainerResponse inspect = dockerClient.inspectContainerCmd(containerId).exec();
+            if (inspect.getState() == null) {
+                return null;
+            }
+            return inspect.getState().getExitCodeLong();
+        });
+    }
+
+    @Override
     public void watchContainerEvents(Consumer<ContainerEvent> callback) {
         execute("watch container events", () -> {
             if (eventStream != null) {

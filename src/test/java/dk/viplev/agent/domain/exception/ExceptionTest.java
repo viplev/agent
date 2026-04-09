@@ -25,7 +25,7 @@ class ExceptionTest {
     void viplevApiExceptionPreservesStatusCode() {
         var ex = new ViplevApiException("not found", 404);
         assertThat(ex.getMessage()).isEqualTo("not found");
-        assertThat(ex.getStatusCode()).isEqualTo(404);
+        assertThat(ex).hasFieldOrPropertyWithValue("statusCode", 404);
         assertThat(ex).isInstanceOf(AgentException.class);
     }
 
@@ -33,7 +33,7 @@ class ExceptionTest {
     void viplevApiExceptionWithCause() {
         var cause = new RuntimeException("connection refused");
         var ex = new ViplevApiException("api error", 503, cause);
-        assertThat(ex.getStatusCode()).isEqualTo(503);
+        assertThat(ex).hasFieldOrPropertyWithValue("statusCode", 503);
         assertThat(ex.getCause()).isSameAs(cause);
     }
 
