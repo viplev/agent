@@ -227,6 +227,36 @@ class DockerContainerAdapterTest {
     }
 
     @Test
+    void isContainerRunning_returnsTrueWhenRunning() {
+        var inspectCmd = mock(InspectContainerCmd.class);
+        when(dockerClient.inspectContainerCmd("container1")).thenReturn(inspectCmd);
+
+        var inspect = mock(InspectContainerResponse.class);
+        when(inspectCmd.exec()).thenReturn(inspect);
+
+        var state = mock(InspectContainerResponse.ContainerState.class);
+        when(inspect.getState()).thenReturn(state);
+        when(state.getRunning()).thenReturn(true);
+
+        assertThat(adapter.isContainerRunning("container1")).isTrue();
+    }
+
+    @Test
+    void getContainerExitCode_returnsExitCodeFromInspect() {
+        var inspectCmd = mock(InspectContainerCmd.class);
+        when(dockerClient.inspectContainerCmd("container1")).thenReturn(inspectCmd);
+
+        var inspect = mock(InspectContainerResponse.class);
+        when(inspectCmd.exec()).thenReturn(inspect);
+
+        var state = mock(InspectContainerResponse.ContainerState.class);
+        when(inspect.getState()).thenReturn(state);
+        when(state.getExitCodeLong()).thenReturn(42L);
+
+        assertThat(adapter.getContainerExitCode("container1")).isEqualTo(42L);
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void watchContainerEvents_forwardsStartEvent() throws InterruptedException {
         var eventsCmd = mockEventsCmd();

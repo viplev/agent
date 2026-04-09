@@ -1,6 +1,7 @@
 package dk.viplev.agent.config;
 
 import dk.viplev.agent.generated.api.AgentApi;
+import dk.viplev.agent.generated.api.BenchmarkApi;
 import dk.viplev.agent.generated.invoker.ApiClient;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -33,6 +34,11 @@ public class ViplevApiConfig {
     @Bean
     public AgentApi agentApi(ApiClient apiClient) {
         return new AgentApi(apiClient);
+    }
+
+    @Bean
+    public BenchmarkApi benchmarkApi(ApiClient apiClient) {
+        return new BenchmarkApi(apiClient);
     }
 
     @Bean
