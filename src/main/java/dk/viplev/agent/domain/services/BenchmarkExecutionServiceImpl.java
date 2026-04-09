@@ -21,6 +21,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -83,28 +84,53 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
             return;
         }
 
-        runExecutor.submit(() -> executeRun(benchmarkId, runId, k6Instructions));
+        try {
+            runExecutor.submit(() -> executeRun(benchmarkId, runId, k6Instructions));
+        } catch (RejectedExecutionException e) {
+            log.error("Failed to submit benchmark execution for benchmark={} run={}", benchmarkId, runId, e);
+            if (runContext.deactivateIfMatch(benchmarkId, runId).isPresent()) {
+                viplevApiPort.updateRunStatus(benchmarkId, runId,
+                        statusUpdate(BenchmarkRunStatusUpdateDTO.StatusEnum.FAILED,
+                                "Failed to schedule benchmark execution: " + e.getMessage()));
+            }
+        }
     }
 
     private void executeRun(UUID benchmarkId, UUID runId, String k6Instructions) {
 
         String k6ContainerId = null;
         boolean metricsStarted = false;
+        boolean metricsStopped = false;
         try {
+            if (!runContext.isActive(benchmarkId, runId)) {
+                return;
+            }
+
             if (k6Instructions == null || k6Instructions.isBlank()) {
                 throw new AgentException("k6Instructions are required for startRun");
             }
 
+            if (!runContext.isActive(benchmarkId, runId)) {
+                return;
+            }
+
             viplevApiPort.updateRunStatus(benchmarkId, runId, statusUpdate(BenchmarkRunStatusUpdateDTO.StatusEnum.STARTED, null));
+
+            if (!runContext.isActive(benchmarkId, runId)) {
+                return;
+            }
 
             metricsStarted = metricCollectorAdapter.startCollection(benchmarkId, runId);
             if (!metricsStarted) {
                 throw new AgentException("Failed to start metric collection");
             }
 
+            if (!runContext.isActive(benchmarkId, runId)) {
+                return;
+            }
+
             k6ContainerId = containerPort.startContainer(k6StartRequest(k6Instructions));
             if (runContext.setK6ContainerId(k6ContainerId).isEmpty()) {
-                containerPort.stopContainer(k6ContainerId);
                 return;
             }
 
@@ -118,11 +144,15 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
             }
 
             stopMetricsSilently();
+            metricsStopped = true;
             sendEmptyPerformanceMetrics(benchmarkId, runId);
             viplevApiPort.updateRunStatus(benchmarkId, runId, statusUpdate(BenchmarkRunStatusUpdateDTO.StatusEnum.FINISHED, null));
         } catch (Exception e) {
             failRun(benchmarkId, runId, k6ContainerId, metricsStarted, e);
         } finally {
+            if (!runContext.isActive(benchmarkId, runId)) {
+                cleanupCancelledRun(k6ContainerId, metricsStarted, metricsStopped);
+            }
             runContext.deactivateIfMatch(benchmarkId, runId);
         }
     }
@@ -148,14 +178,25 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
         }
 
         var run = runToStop.get();
+        String stopFailureReason = null;
 
         try {
             if (run.k6ContainerId() != null) {
                 containerPort.stopContainer(run.k6ContainerId());
             }
+        } catch (Exception e) {
+            stopFailureReason = e.getMessage() == null ? "Failed to stop K6 container" : e.getMessage();
+            log.warn("Failed to stop K6 container for benchmark={} run={}", benchmarkId, runId, e);
         } finally {
             stopMetricsSilently();
-            viplevApiPort.updateRunStatus(benchmarkId, runId, statusUpdate(BenchmarkRunStatusUpdateDTO.StatusEnum.STOPPED, null));
+            if (stopFailureReason == null) {
+                viplevApiPort.updateRunStatus(benchmarkId, runId,
+                        statusUpdate(BenchmarkRunStatusUpdateDTO.StatusEnum.STOPPED, null));
+            } else {
+                viplevApiPort.updateRunStatus(benchmarkId, runId,
+                        statusUpdate(BenchmarkRunStatusUpdateDTO.StatusEnum.FAILED,
+                                "Failed to stop benchmark run: " + stopFailureReason));
+            }
         }
     }
 
@@ -219,6 +260,25 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
             metricCollectorAdapter.stopCollection();
         } catch (Exception e) {
             log.warn("Failed to stop metric collection cleanly", e);
+        }
+    }
+
+    private void stopContainerSilently(String containerId) {
+        if (containerId == null) {
+            return;
+        }
+
+        try {
+            containerPort.stopContainer(containerId);
+        } catch (Exception e) {
+            log.warn("Failed to stop K6 container {} during cleanup", containerId, e);
+        }
+    }
+
+    private void cleanupCancelledRun(String k6ContainerId, boolean metricsStarted, boolean metricsStopped) {
+        stopContainerSilently(k6ContainerId);
+        if (metricsStarted && !metricsStopped) {
+            stopMetricsSilently();
         }
     }
 
