@@ -73,6 +73,14 @@ class BenchmarkExecutionServiceImplTest {
         verify(metricCollectorAdapter).stopCollection();
         verify(viplevApiPort).sendPerformanceMetrics(any(), any(), any());
         assertThat(runContext.isActive()).isFalse();
+
+        var requestCaptor = ArgumentCaptor.forClass(ContainerStartRequest.class);
+        verify(containerPort).startContainer(requestCaptor.capture());
+        var request = requestCaptor.getValue();
+        assertThat(request.command()).containsExactly("run", "/tmp/viplev-k6-script.js");
+        assertThat(request.volumes()).hasSize(1);
+        assertThat(request.volumes().values()).containsExactly("/tmp/viplev-k6-script.js");
+        assertThat(request.env()).isEmpty();
     }
 
     @Test
@@ -89,6 +97,22 @@ class BenchmarkExecutionServiceImplTest {
         assertThat(statusCaptor.getAllValues().get(0).getStatus()).isEqualTo(BenchmarkRunStatusUpdateDTO.StatusEnum.STARTED);
         assertThat(statusCaptor.getAllValues().get(1).getStatus()).isEqualTo(BenchmarkRunStatusUpdateDTO.StatusEnum.FAILED);
         assertThat(statusCaptor.getAllValues().get(1).getStatusReason()).contains("137");
+    }
+
+    @Test
+    void startRun_whenExitCodeMissing_updatesFailed() {
+        when(metricCollectorAdapter.startCollection(BENCHMARK_ID, RUN_ID)).thenReturn(true);
+        when(containerPort.startContainer(any(ContainerStartRequest.class))).thenReturn("k6-id");
+        when(containerPort.isContainerRunning("k6-id")).thenReturn(false);
+        when(containerPort.getContainerExitCode("k6-id")).thenReturn(null);
+
+        service.startRun(BENCHMARK_ID, RUN_ID, "script");
+
+        var statusCaptor = ArgumentCaptor.forClass(BenchmarkRunStatusUpdateDTO.class);
+        verify(viplevApiPort, org.mockito.Mockito.times(2)).updateRunStatus(any(), any(), statusCaptor.capture());
+        assertThat(statusCaptor.getAllValues().get(0).getStatus()).isEqualTo(BenchmarkRunStatusUpdateDTO.StatusEnum.STARTED);
+        assertThat(statusCaptor.getAllValues().get(1).getStatus()).isEqualTo(BenchmarkRunStatusUpdateDTO.StatusEnum.FAILED);
+        assertThat(statusCaptor.getAllValues().get(1).getStatusReason()).contains("no exit code");
     }
 
     @Test

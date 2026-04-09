@@ -13,10 +13,12 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.IntStream;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -151,5 +153,14 @@ class MessagePollingAdapterTest {
 
         verify(benchmarkExecutionUseCase, never()).startRun(any(), any(), any());
         verify(benchmarkExecutionUseCase, never()).stopRun(any(), any());
+    }
+
+    @Test
+    void pollingExceptionDoesNotDelayRetryByInterval() {
+        doThrow(new RuntimeException("boom")).when(viplevApiPort).pollMessages();
+
+        IntStream.range(0, 3).forEach(i -> adapter.pollMessagesSafely(1_000 + i));
+
+        verify(viplevApiPort, times(3)).pollMessages();
     }
 }

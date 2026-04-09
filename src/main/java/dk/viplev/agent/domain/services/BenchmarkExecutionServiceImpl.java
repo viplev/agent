@@ -16,6 +16,9 @@ import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PreDestroy;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -31,6 +34,7 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
 
     private static final Logger log = LoggerFactory.getLogger(BenchmarkExecutionServiceImpl.class);
     private static final AtomicInteger RUNNER_THREAD_COUNTER = new AtomicInteger(0);
+    private static final String K6_SCRIPT_CONTAINER_PATH = "/tmp/viplev-k6-script.js";
 
     private final RunContext runContext;
     private final ViplevApiPort viplevApiPort;
@@ -99,6 +103,7 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
     private void executeRun(UUID benchmarkId, UUID runId, String k6Instructions) {
 
         String k6ContainerId = null;
+        Path k6ScriptFile = null;
         boolean metricsStarted = false;
         boolean metricsStopped = false;
         try {
@@ -129,7 +134,13 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
                 return;
             }
 
-            k6ContainerId = containerPort.startContainer(k6StartRequest(k6Instructions));
+            k6ScriptFile = createTempK6Script(k6Instructions);
+
+            if (!runContext.isActive(benchmarkId, runId)) {
+                return;
+            }
+
+            k6ContainerId = containerPort.startContainer(k6StartRequest(k6ScriptFile));
             if (runContext.setK6ContainerId(k6ContainerId).isEmpty()) {
                 return;
             }
@@ -154,6 +165,7 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
                 cleanupCancelledRun(k6ContainerId, metricsStarted, metricsStopped);
             }
             runContext.deactivateIfMatch(benchmarkId, runId);
+            deleteTempFileSilently(k6ScriptFile);
         }
     }
 
@@ -200,13 +212,13 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
         }
     }
 
-    private ContainerStartRequest k6StartRequest(String k6Instructions) {
+    private ContainerStartRequest k6StartRequest(Path scriptFile) {
         return new ContainerStartRequest(
                 k6Image,
-                Map.of("K6_SCRIPT", k6Instructions),
                 Map.of(),
+                Map.of(scriptFile.toAbsolutePath().toString(), K6_SCRIPT_CONTAINER_PATH),
                 k6Network,
-                List.of("run", "-"));
+                List.of("run", K6_SCRIPT_CONTAINER_PATH));
     }
 
     private boolean waitForContainerToComplete(UUID benchmarkId, UUID runId, String containerId) {
@@ -222,7 +234,11 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
             }
 
             Long exitCode = containerPort.getContainerExitCode(containerId);
-            if (exitCode != null && exitCode != 0L) {
+            if (exitCode == null) {
+                throw new AgentException("K6 container exited but no exit code was available");
+            }
+
+            if (exitCode != 0L) {
                 throw new AgentException("K6 container exited with code " + exitCode);
             }
             return true;
@@ -279,6 +295,28 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
         stopContainerSilently(k6ContainerId);
         if (metricsStarted && !metricsStopped) {
             stopMetricsSilently();
+        }
+    }
+
+    private Path createTempK6Script(String k6Instructions) {
+        try {
+            Path scriptFile = Files.createTempFile("viplev-k6-", ".js");
+            Files.writeString(scriptFile, k6Instructions);
+            return scriptFile;
+        } catch (IOException e) {
+            throw new AgentException("Failed to write temporary k6 script file", e);
+        }
+    }
+
+    private void deleteTempFileSilently(Path scriptFile) {
+        if (scriptFile == null) {
+            return;
+        }
+
+        try {
+            Files.deleteIfExists(scriptFile);
+        } catch (IOException e) {
+            log.warn("Failed to delete temporary k6 script file {}", scriptFile, e);
         }
     }
 

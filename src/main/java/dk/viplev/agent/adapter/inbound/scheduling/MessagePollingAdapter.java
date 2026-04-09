@@ -51,9 +51,9 @@ public class MessagePollingAdapter {
             return;
         }
 
-        lastPollAtMs = nowMs;
         try {
             List<MessageDTO> messages = viplevApiPort.pollMessages();
+            lastPollAtMs = nowMs;
             handleMessages(messages);
         } catch (Exception e) {
             log.warn("Failed to poll messages from VIPLEV; will retry on next poll", e);
