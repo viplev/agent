@@ -16,6 +16,8 @@ import java.math.BigInteger;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -26,6 +28,7 @@ public class CadvisorAdapter implements CadvisorPort {
     private static final String STATS_PATH = "/api/v1.3/docker";
     private static final String DOCKER_PATH_PREFIX = "/docker/";
     private static final BigInteger UNSPECIFIED_CGROUP_MEMORY_LIMIT = BigInteger.valueOf(Long.MAX_VALUE);
+    private static final Pattern CONTAINER_ID_PATTERN = Pattern.compile("^[a-f0-9]{12,64}$");
 
     private final RestTemplate restTemplate;
 
@@ -41,16 +44,22 @@ public class CadvisorAdapter implements CadvisorPort {
         }
 
         return response.entrySet().stream()
-                .filter(e -> isDockerContainerEntry(e.getKey(), e.getValue()))
+                .map(e -> toResolvedEntry(e.getKey(), e.getValue()))
+                .filter(Objects::nonNull)
                 .collect(Collectors.toMap(
-                        e -> resolveContainerId(e.getKey(), e.getValue()),
-                        e -> toContainerStats(e.getValue())
+                        ResolvedContainerEntry::containerId,
+                        e -> toContainerStats(e.info()),
+                        (existing, ignored) -> existing,
+                        LinkedHashMap::new
                 ));
     }
 
-    private boolean isDockerContainerEntry(String key, CadvisorContainerInfo info) {
+    private ResolvedContainerEntry toResolvedEntry(String key, CadvisorContainerInfo info) {
         String id = resolveContainerId(key, info);
-        return id != null && !id.isBlank();
+        if (id == null || id.isBlank()) {
+            return null;
+        }
+        return new ResolvedContainerEntry(id, info);
     }
 
     private String resolveContainerId(String key, CadvisorContainerInfo info) {
@@ -74,7 +83,10 @@ public class CadvisorAdapter implements CadvisorPort {
     }
 
     private boolean isContainerId(String value) {
-        return value != null && value.matches("[a-f0-9]{12,64}");
+        return value != null && CONTAINER_ID_PATTERN.matcher(value).matches();
+    }
+
+    private record ResolvedContainerEntry(String containerId, CadvisorContainerInfo info) {
     }
 
     private Map<String, CadvisorContainerInfo> fetchStats(String baseUrl) {

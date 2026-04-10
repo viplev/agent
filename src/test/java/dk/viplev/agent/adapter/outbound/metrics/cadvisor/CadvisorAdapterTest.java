@@ -216,6 +216,27 @@ class CadvisorAdapterTest {
         assertThat(adapter.scrapeAllContainerStats(BASE_URL).get(CONTAINER_ID).memoryLimitBytes()).isZero();
     }
 
+    @Test
+    void scrapeAllContainerStats_memoryLimitZeroWhenUnlimitedSentinel() {
+        String json = """
+                {
+                  "/system.slice/docker-43fba5afb3a841531c2e2c330a510d997f139c90d1de14c7ec437403c23cd039.scope": {
+                    "id": "43fba5afb3a841531c2e2c330a510d997f139c90d1de14c7ec437403c23cd039",
+                    "aliases": ["nginx", "43fba5afb3a841531c2e2c330a510d997f139c90d1de14c7ec437403c23cd039"],
+                    "spec": { "memory": { "limit": 18446744073709551615 } },
+                    "stats": [{ "timestamp": "2024-01-01T12:00:00Z",
+                                "cpu": { "usage": { "total": 0 } },
+                                "memory": { "usage": 12345678 },
+                                "network": { "interfaces": [] },
+                                "diskio": { "io_service_bytes": [] } }]
+                  }
+                }
+                """;
+        mockRestTemplate(json);
+
+        assertThat(adapter.scrapeAllContainerStats(BASE_URL).get(CONTAINER_ID).memoryLimitBytes()).isZero();
+    }
+
     // -- Helper --
 
     @SuppressWarnings("unchecked")

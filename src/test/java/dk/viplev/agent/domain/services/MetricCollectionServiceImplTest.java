@@ -99,7 +99,9 @@ class MetricCollectionServiceImplTest {
         service = new MetricCollectionServiceImpl(
                 nodeExporterPort, cadvisorPort, containerPort,
                 nodeDiscoveryPort, resourceMetricRepository, viplevApiPort, resourceMetricMapper,
-                9100, 8080, mockExecutor);
+                9100, 8080,
+                "viplev-node-exporter", "viplev-cadvisor",
+                mockExecutor);
     }
 
     @Test

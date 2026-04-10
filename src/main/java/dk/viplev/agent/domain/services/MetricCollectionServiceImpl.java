@@ -3,6 +3,7 @@ package dk.viplev.agent.domain.services;
 import dk.viplev.agent.domain.mapper.ResourceMetricMapper;
 import dk.viplev.agent.domain.model.ResourceMetric;
 import dk.viplev.agent.domain.model.TargetType;
+import dk.viplev.agent.config.ExporterConstants;
 import dk.viplev.agent.generated.model.MetricResourceDTO;
 import dk.viplev.agent.generated.model.MetricResourceNodeDTO;
 import dk.viplev.agent.generated.model.MetricResourceServiceDTO;
@@ -41,8 +42,6 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
 
     private static final Logger log = LoggerFactory.getLogger(MetricCollectionServiceImpl.class);
     private static final AtomicInteger THREAD_COUNTER = new AtomicInteger(0);
-    private static final String LOCAL_NODE_EXPORTER_HOST = "viplev-node-exporter";
-    private static final String LOCAL_CADVISOR_HOST = "viplev-cadvisor";
 
     private final NodeExporterPort nodeExporterPort;
     private final CadvisorPort cadvisorPort;
@@ -53,6 +52,8 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
     private final ResourceMetricMapper resourceMetricMapper;
     private final int nodeExporterPortNumber;
     private final int cadvisorPortNumber;
+    private final String localNodeExporterHost;
+    private final String localCadvisorHost;
     @Nullable
     private final ScheduledExecutorService executorOverride;
     private final Map<ScraperKey, ScraperHealth> scraperHealthStates = new ConcurrentHashMap<>();
@@ -85,6 +86,15 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
         RECOVERED
     }
 
+    enum FlushStatus {
+        SENT,
+        FAILED,
+        SKIPPED
+    }
+
+    record FlushResult(FlushStatus status, int metricCount) {
+    }
+
     record ScraperKey(String machineId, ScraperType scraperType) {
     }
 
@@ -97,6 +107,8 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
                                        ResourceMetricMapper resourceMetricMapper,
                                        @Value("${agent.node-exporter-port}") int nodeExporterPortNumber,
                                        @Value("${agent.cadvisor-port}") int cadvisorPortNumber,
+                                       @Value("${agent.node-exporter-container-name:" + ExporterConstants.NODE_EXPORTER_CONTAINER_NAME + "}") String localNodeExporterHost,
+                                       @Value("${agent.cadvisor-container-name:" + ExporterConstants.CADVISOR_CONTAINER_NAME + "}") String localCadvisorHost,
                                        @Nullable ScheduledExecutorService executorOverride) {
         this.nodeExporterPort = nodeExporterPort;
         this.cadvisorPort = cadvisorPort;
@@ -107,6 +119,8 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
         this.resourceMetricMapper = resourceMetricMapper;
         this.nodeExporterPortNumber = nodeExporterPortNumber;
         this.cadvisorPortNumber = cadvisorPortNumber;
+        this.localNodeExporterHost = localNodeExporterHost;
+        this.localCadvisorHost = localCadvisorHost;
         this.executorOverride = executorOverride;
     }
 
@@ -158,7 +172,10 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
         }
         executor = null;
 
-        flushMetrics();
+        FlushResult flushResult = flushMetrics(false);
+        if (flushResult.status == FlushStatus.FAILED && flushResult.metricCount > 0) {
+            log.warn("Discarding {} unsent resource metrics while stopping collection", flushResult.metricCount);
+        }
         clearBufferedMetrics("stopping collection");
 
         log.info("Metric collection stopped for benchmark={} run={}", benchmarkId, runId);
@@ -177,8 +194,8 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
 
             for (var node : nodes) {
                 boolean isLocalNode = node.machineId().equals(localId);
-                String nodeExporterHost = isLocalNode ? LOCAL_NODE_EXPORTER_HOST : node.ipAddress();
-                String cadvisorHost = isLocalNode ? LOCAL_CADVISOR_HOST : node.ipAddress();
+                String nodeExporterHost = isLocalNode ? localNodeExporterHost : node.ipAddress();
+                String cadvisorHost = isLocalNode ? localCadvisorHost : node.ipAddress();
                 String nodeExporterUrl = "http://" + nodeExporterHost + ":" + nodeExporterPortNumber;
                 String cadvisorUrl = "http://" + cadvisorHost + ":" + cadvisorPortNumber;
                 try {
@@ -249,19 +266,23 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
     }
 
     void flushMetrics() {
+        flushMetrics(true);
+    }
+
+    private FlushResult flushMetrics(boolean allowRetryLogging) {
         try {
             List<ResourceMetric> unflushed;
             synchronized (metricsDbLock) {
                 unflushed = resourceMetricRepository.findByFlushedFalseOrderByCollectedAtAsc();
             }
             if (unflushed.isEmpty()) {
-                return;
+                return new FlushResult(FlushStatus.SKIPPED, 0);
             }
 
             if (benchmarkId == null || runId == null) {
                 log.warn("flushMetrics called before startCollection (benchmarkId={}, runId={}); skipping flush",
                         benchmarkId, runId);
-                return;
+                return new FlushResult(FlushStatus.SKIPPED, unflushed.size());
             }
 
             // Filter out legacy metrics with null machineId and delete them
@@ -277,7 +298,7 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
                     .filter(m -> m.getMachineId() != null)
                     .toList();
             if (unflushed.isEmpty()) {
-                return;
+                return new FlushResult(FlushStatus.SKIPPED, 0);
             }
 
             // Group host metrics by machineId
@@ -334,7 +355,7 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
 
             if (nodeDTOs.isEmpty()) {
                 log.warn("No metrics to flush despite unflushed records; skipping flush");
-                return;
+                return new FlushResult(FlushStatus.SKIPPED, unflushed.size());
             }
 
             var dto = new MetricResourceDTO().hosts(nodeDTOs);
@@ -346,11 +367,18 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
                     resourceMetricRepository.deleteAllByIdInBatch(flushedIds);
                 }
                 log.debug("Flushed {} metrics to VIPLEV", unflushed.size());
+                return new FlushResult(FlushStatus.SENT, unflushed.size());
             } catch (Exception e) {
-                log.warn("Failed to send resource metrics to VIPLEV; will retry on next flush", e);
+                if (allowRetryLogging) {
+                    log.warn("Failed to send resource metrics to VIPLEV; will retry on next flush", e);
+                } else {
+                    log.warn("Failed to send resource metrics to VIPLEV during stopCollection", e);
+                }
+                return new FlushResult(FlushStatus.FAILED, unflushed.size());
             }
         } catch (Exception e) {
             log.warn("Unexpected error in flushMetrics", e);
+            return new FlushResult(FlushStatus.FAILED, 0);
         }
     }
 

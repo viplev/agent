@@ -63,7 +63,9 @@ class ExporterLifecycleManagerTest {
         manager = spy(new ExporterLifecycleManager(
                 dockerClient,
                 "gcr.io/cadvisor/cadvisor:v0.51.0",
-                "prom/node-exporter:v1.9.0"
+                "prom/node-exporter:v1.9.0",
+                ExporterLifecycleManager.CADVISOR_CONTAINER_NAME,
+                ExporterLifecycleManager.NODE_EXPORTER_CONTAINER_NAME
         ));
         lenient().doReturn("test-agent-container-id").when(manager).readSelfContainerId();
         lenient().doReturn(false).when(manager).isSwarmActive();
