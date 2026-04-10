@@ -22,10 +22,13 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -38,6 +41,8 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
 
     private static final Logger log = LoggerFactory.getLogger(MetricCollectionServiceImpl.class);
     private static final AtomicInteger THREAD_COUNTER = new AtomicInteger(0);
+    private static final String LOCAL_NODE_EXPORTER_HOST = "viplev-node-exporter";
+    private static final String LOCAL_CADVISOR_HOST = "viplev-cadvisor";
 
     private final NodeExporterPort nodeExporterPort;
     private final CadvisorPort cadvisorPort;
@@ -50,11 +55,38 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
     private final int cadvisorPortNumber;
     @Nullable
     private final ScheduledExecutorService executorOverride;
+    private final Map<ScraperKey, ScraperHealth> scraperHealthStates = new ConcurrentHashMap<>();
+    private final Object metricsDbLock = new Object();
 
     private volatile UUID benchmarkId;
     private volatile UUID runId;
     private volatile ScheduledExecutorService executor;
     private volatile String localMachineId;
+
+    enum ScraperType {
+        NODE_EXPORTER("node_exporter"),
+        CADVISOR("cadvisor");
+
+        private final String logName;
+
+        ScraperType(String logName) {
+            this.logName = logName;
+        }
+    }
+
+    enum ScraperHealth {
+        HEALTHY,
+        DEGRADED
+    }
+
+    enum ScraperTransition {
+        NONE,
+        DEGRADED,
+        RECOVERED
+    }
+
+    record ScraperKey(String machineId, ScraperType scraperType) {
+    }
 
     public MetricCollectionServiceImpl(NodeExporterPort nodeExporterPort,
                                        CadvisorPort cadvisorPort,
@@ -85,6 +117,8 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
                     this.benchmarkId, this.runId);
             return false;
         }
+
+        clearBufferedMetrics("starting new collection");
 
         this.benchmarkId = benchmarkId;
         this.runId = runId;
@@ -125,6 +159,7 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
         executor = null;
 
         flushMetrics();
+        clearBufferedMetrics("stopping collection");
 
         log.info("Metric collection stopped for benchmark={} run={}", benchmarkId, runId);
 
@@ -136,12 +171,16 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
     void collectMetrics() {
         try {
             var nodes = nodeDiscoveryPort.discoverNodes();
+            pruneScraperStates(nodes);
 
             String localId = getLocalMachineId();
 
             for (var node : nodes) {
-                String nodeExporterUrl = "http://" + node.ipAddress() + ":" + nodeExporterPortNumber;
-                String cadvisorUrl = "http://" + node.ipAddress() + ":" + cadvisorPortNumber;
+                boolean isLocalNode = node.machineId().equals(localId);
+                String nodeExporterHost = isLocalNode ? LOCAL_NODE_EXPORTER_HOST : node.ipAddress();
+                String cadvisorHost = isLocalNode ? LOCAL_CADVISOR_HOST : node.ipAddress();
+                String nodeExporterUrl = "http://" + nodeExporterHost + ":" + nodeExporterPortNumber;
+                String cadvisorUrl = "http://" + cadvisorHost + ":" + cadvisorPortNumber;
                 try {
                     var hostStats = nodeExporterPort.scrapeHostStats(nodeExporterUrl);
                     var hostMetric = ResourceMetric.builder()
@@ -157,16 +196,19 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
                             .blockInBytes((double) hostStats.blockInBytes())
                             .blockOutBytes((double) hostStats.blockOutBytes())
                             .build();
-                    resourceMetricRepository.save(hostMetric);
+                    synchronized (metricsDbLock) {
+                        resourceMetricRepository.save(hostMetric);
+                    }
+                    logScraperSuccess(node.machineId(), ScraperType.NODE_EXPORTER);
                 } catch (Exception e) {
-                    log.warn("Failed to collect host stats for node={}", node.machineId(), e);
+                    logScraperFailure(node.machineId(), ScraperType.NODE_EXPORTER, e);
                 }
 
                 try {
                     var containerStatsMap = cadvisorPort.scrapeAllContainerStats(cadvisorUrl);
 
                     Map<String, String> idToName;
-                    if (node.machineId().equals(localId)) {
+                    if (isLocalNode) {
                         var containers = containerPort.listContainers();
                         idToName = containers.stream()
                                 .collect(Collectors.toMap(c -> c.id(), c -> c.name()));
@@ -192,10 +234,13 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
                                 .blockInBytes((double) stats.blockInBytes())
                                 .blockOutBytes((double) stats.blockOutBytes())
                                 .build();
-                        resourceMetricRepository.save(containerMetric);
+                        synchronized (metricsDbLock) {
+                            resourceMetricRepository.save(containerMetric);
+                        }
                     }
+                    logScraperSuccess(node.machineId(), ScraperType.CADVISOR);
                 } catch (Exception e) {
-                    log.warn("Failed to collect container stats for node={}", node.machineId(), e);
+                    logScraperFailure(node.machineId(), ScraperType.CADVISOR, e);
                 }
             }
         } catch (Exception e) {
@@ -205,7 +250,10 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
 
     void flushMetrics() {
         try {
-            var unflushed = resourceMetricRepository.findByFlushedFalseOrderByCollectedAtAsc();
+            List<ResourceMetric> unflushed;
+            synchronized (metricsDbLock) {
+                unflushed = resourceMetricRepository.findByFlushedFalseOrderByCollectedAtAsc();
+            }
             if (unflushed.isEmpty()) {
                 return;
             }
@@ -220,7 +268,9 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
             boolean hasNullMachineId = unflushed.stream().anyMatch(m -> m.getMachineId() == null);
             if (hasNullMachineId) {
                 log.warn("Deleting legacy resource metrics with null machineId — these cannot be flushed");
-                resourceMetricRepository.deleteByMachineIdIsNull();
+                synchronized (metricsDbLock) {
+                    resourceMetricRepository.deleteByMachineIdIsNull();
+                }
             }
 
             unflushed = unflushed.stream()
@@ -288,11 +338,13 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
             }
 
             var dto = new MetricResourceDTO().hosts(nodeDTOs);
+            List<UUID> flushedIds = unflushed.stream().map(ResourceMetric::getId).toList();
 
             try {
                 viplevApiPort.sendResourceMetrics(benchmarkId, runId, dto);
-                unflushed.forEach(m -> m.setFlushed(true));
-                resourceMetricRepository.saveAll(unflushed);
+                synchronized (metricsDbLock) {
+                    resourceMetricRepository.deleteAllByIdInBatch(flushedIds);
+                }
                 log.debug("Flushed {} metrics to VIPLEV", unflushed.size());
             } catch (Exception e) {
                 log.warn("Failed to send resource metrics to VIPLEV; will retry on next flush", e);
@@ -307,5 +359,68 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
             localMachineId = nodeDiscoveryPort.getLocalNodeId();
         }
         return localMachineId;
+    }
+
+    ScraperTransition markScraperFailure(String machineId, ScraperType scraperType) {
+        ScraperKey key = new ScraperKey(machineId, scraperType);
+        ScraperHealth previous = scraperHealthStates.put(key, ScraperHealth.DEGRADED);
+        if (previous == ScraperHealth.DEGRADED) {
+            return ScraperTransition.NONE;
+        }
+        return ScraperTransition.DEGRADED;
+    }
+
+    ScraperTransition markScraperSuccess(String machineId, ScraperType scraperType) {
+        ScraperKey key = new ScraperKey(machineId, scraperType);
+        ScraperHealth previous = scraperHealthStates.put(key, ScraperHealth.HEALTHY);
+        if (previous == ScraperHealth.DEGRADED) {
+            return ScraperTransition.RECOVERED;
+        }
+        return ScraperTransition.NONE;
+    }
+
+    void pruneScraperStates(List<dk.viplev.agent.domain.model.NodeInfo> nodes) {
+        Set<String> activeMachineIds = new HashSet<>();
+        for (var node : nodes) {
+            activeMachineIds.add(node.machineId());
+        }
+        scraperHealthStates.keySet().removeIf(key -> !activeMachineIds.contains(key.machineId()));
+    }
+
+    @Nullable
+    ScraperHealth getScraperHealth(String machineId, ScraperType scraperType) {
+        return scraperHealthStates.get(new ScraperKey(machineId, scraperType));
+    }
+
+    private void logScraperFailure(String machineId, ScraperType scraperType, Exception e) {
+        ScraperTransition transition = markScraperFailure(machineId, scraperType);
+        String errorMessage = e.getMessage();
+        if (transition == ScraperTransition.DEGRADED) {
+            log.warn("Metric scraper {} degraded for node={}: {}", scraperType.logName, machineId, errorMessage);
+            log.debug("Metric scraper {} degraded stacktrace for node={}", scraperType.logName, machineId, e);
+            return;
+        }
+        log.debug("Metric scraper {} still degraded for node={}: {}",
+                scraperType.logName,
+                machineId,
+                errorMessage);
+    }
+
+    private void logScraperSuccess(String machineId, ScraperType scraperType) {
+        ScraperTransition transition = markScraperSuccess(machineId, scraperType);
+        if (transition == ScraperTransition.RECOVERED) {
+            log.info("Metric scraper {} recovered for node={}", scraperType.logName, machineId);
+        }
+    }
+
+    private void clearBufferedMetrics(String reason) {
+        synchronized (metricsDbLock) {
+            long rowCount = resourceMetricRepository.count();
+            if (rowCount == 0) {
+                return;
+            }
+            resourceMetricRepository.deleteAllInBatch();
+            log.info("Cleared {} buffered resource metrics while {}", rowCount, reason);
+        }
     }
 }

@@ -12,6 +12,8 @@ import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 
 import java.time.Duration;
+import java.math.BigInteger;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -21,8 +23,9 @@ import java.util.stream.Collectors;
 @Profile("docker")
 public class CadvisorAdapter implements CadvisorPort {
 
-    private static final String STATS_PATH = "/api/v2.0/stats?type=docker&count=2";
+    private static final String STATS_PATH = "/api/v1.3/docker";
     private static final String DOCKER_PATH_PREFIX = "/docker/";
+    private static final BigInteger UNSPECIFIED_CGROUP_MEMORY_LIMIT = BigInteger.valueOf(Long.MAX_VALUE);
 
     private final RestTemplate restTemplate;
 
@@ -38,11 +41,40 @@ public class CadvisorAdapter implements CadvisorPort {
         }
 
         return response.entrySet().stream()
-                .filter(e -> e.getKey().startsWith(DOCKER_PATH_PREFIX))
+                .filter(e -> isDockerContainerEntry(e.getKey(), e.getValue()))
                 .collect(Collectors.toMap(
-                        e -> e.getKey().substring(DOCKER_PATH_PREFIX.length()),
+                        e -> resolveContainerId(e.getKey(), e.getValue()),
                         e -> toContainerStats(e.getValue())
                 ));
+    }
+
+    private boolean isDockerContainerEntry(String key, CadvisorContainerInfo info) {
+        String id = resolveContainerId(key, info);
+        return id != null && !id.isBlank();
+    }
+
+    private String resolveContainerId(String key, CadvisorContainerInfo info) {
+        if (info != null && isContainerId(info.id())) {
+            return info.id();
+        }
+        if (info != null && info.aliases() != null) {
+            for (String alias : info.aliases()) {
+                if (isContainerId(alias)) {
+                    return alias;
+                }
+            }
+        }
+        if (key != null && key.startsWith(DOCKER_PATH_PREFIX)) {
+            String candidate = key.substring(DOCKER_PATH_PREFIX.length());
+            if (isContainerId(candidate)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private boolean isContainerId(String value) {
+        return value != null && value.matches("[a-f0-9]{12,64}");
     }
 
     private Map<String, CadvisorContainerInfo> fetchStats(String baseUrl) {
@@ -52,7 +84,7 @@ public class CadvisorAdapter implements CadvisorPort {
                     url,
                     HttpMethod.GET,
                     null,
-                    new ParameterizedTypeReference<Map<String, CadvisorContainerInfo>>() {}
+                    new ParameterizedTypeReference<LinkedHashMap<String, CadvisorContainerInfo>>() {}
             ).getBody();
         } catch (RestClientException e) {
             throw new ContainerRuntimeException(
@@ -107,7 +139,14 @@ public class CadvisorAdapter implements CadvisorPort {
         if (info.spec() == null || info.spec().memory() == null) {
             return 0L;
         }
-        return info.spec().memory().limit();
+        BigInteger limit = info.spec().memory().limit();
+        if (limit == null || limit.signum() <= 0) {
+            return 0L;
+        }
+        if (limit.compareTo(UNSPECIFIED_CGROUP_MEMORY_LIMIT) >= 0) {
+            return 0L;
+        }
+        return limit.longValue();
     }
 
     private long sumNetworkBytes(CadvisorContainerInfo.CadvisorStat stat, boolean rx) {

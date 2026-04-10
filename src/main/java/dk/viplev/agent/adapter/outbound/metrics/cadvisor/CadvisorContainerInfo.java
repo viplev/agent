@@ -4,11 +4,14 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.time.Instant;
+import java.math.BigInteger;
 import java.util.List;
 import java.util.Map;
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 record CadvisorContainerInfo(
+        @JsonProperty("id") String id,
+        @JsonProperty("aliases") List<String> aliases,
         @JsonProperty("spec") CadvisorSpec spec,
         @JsonProperty("stats") List<CadvisorStat> stats
 ) {
@@ -20,7 +23,7 @@ record CadvisorContainerInfo(
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     record CadvisorMemorySpec(
-            @JsonProperty("limit") long limit
+            @JsonProperty("limit") BigInteger limit
     ) {}
 
     @JsonIgnoreProperties(ignoreUnknown = true)
