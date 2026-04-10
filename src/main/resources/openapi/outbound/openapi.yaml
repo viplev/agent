@@ -1729,6 +1729,9 @@ components:
           type: string
           enum: [PENDING_START, PENDING_STOP]
           description: Type of message for the agent
+        benchmarkData:
+          $ref: '#/components/schemas/BenchmarkDTO'
+          description: Benchmark payload included for PENDING_START messages
 
     ErrorDTO:
       type: object

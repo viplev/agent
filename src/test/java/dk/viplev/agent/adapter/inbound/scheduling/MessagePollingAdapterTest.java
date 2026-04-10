@@ -4,6 +4,7 @@ import dk.viplev.agent.domain.model.RunContext;
 import dk.viplev.agent.generated.model.BenchmarkDTO;
 import dk.viplev.agent.generated.model.MessageDTO;
 import dk.viplev.agent.port.inbound.BenchmarkExecutionUseCase;
+import dk.viplev.agent.port.inbound.ServiceDiscoveryUseCase;
 import dk.viplev.agent.port.outbound.rest.ViplevApiPort;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -31,6 +32,9 @@ class MessagePollingAdapterTest {
     @Mock
     private BenchmarkExecutionUseCase benchmarkExecutionUseCase;
 
+    @Mock
+    private ServiceDiscoveryUseCase serviceDiscoveryUseCase;
+
     private RunContext runContext;
     private MessagePollingAdapter adapter;
 
@@ -40,7 +44,8 @@ class MessagePollingAdapterTest {
     @BeforeEach
     void setUp() {
         runContext = new RunContext();
-        adapter = new MessagePollingAdapter(viplevApiPort, benchmarkExecutionUseCase, runContext, 15_000, 5_000);
+        adapter = new MessagePollingAdapter(viplevApiPort, benchmarkExecutionUseCase, serviceDiscoveryUseCase,
+                runContext, 15_000, 5_000);
     }
 
     @Test
@@ -49,6 +54,7 @@ class MessagePollingAdapterTest {
 
         adapter.pollMessagesSafely(1_000);
 
+        verify(serviceDiscoveryUseCase).syncServices();
         verify(viplevApiPort).pollMessages();
     }
 
@@ -80,15 +86,28 @@ class MessagePollingAdapterTest {
         var message = new MessageDTO()
                 .benchmarkId(BENCHMARK_ID)
                 .runId(RUN_ID)
-                .messageType(MessageDTO.MessageTypeEnum.PENDING_START);
+                .messageType(MessageDTO.MessageTypeEnum.PENDING_START)
+                .benchmarkData(new BenchmarkDTO().k6Instructions("script"));
 
         when(viplevApiPort.pollMessages()).thenReturn(List.of(message));
-        when(viplevApiPort.getBenchmark(BENCHMARK_ID)).thenReturn(new BenchmarkDTO().k6Instructions("script"));
 
         adapter.pollMessagesSafely(1_000);
 
-        verify(viplevApiPort).getBenchmark(BENCHMARK_ID);
         verify(benchmarkExecutionUseCase).startRun(BENCHMARK_ID, RUN_ID, "script");
+    }
+
+    @Test
+    void pendingStart_withoutBenchmarkData_doesNotStartRun() {
+        var message = new MessageDTO()
+                .benchmarkId(BENCHMARK_ID)
+                .runId(RUN_ID)
+                .messageType(MessageDTO.MessageTypeEnum.PENDING_START);
+
+        when(viplevApiPort.pollMessages()).thenReturn(List.of(message));
+
+        adapter.pollMessagesSafely(1_000);
+
+        verify(benchmarkExecutionUseCase, never()).startRun(any(), any(), any());
     }
 
     @Test
@@ -162,5 +181,19 @@ class MessagePollingAdapterTest {
         IntStream.range(0, 3).forEach(i -> adapter.pollMessagesSafely(1_000 + i));
 
         verify(viplevApiPort, times(3)).pollMessages();
+    }
+
+    @Test
+    void initialServiceSyncFailure_blocksPollingUntilSyncSucceeds() {
+        doThrow(new RuntimeException("sync failed"))
+                .doNothing()
+                .when(serviceDiscoveryUseCase).syncServices();
+        when(viplevApiPort.pollMessages()).thenReturn(List.of());
+
+        adapter.pollMessagesSafely(1_000);
+        verify(viplevApiPort, never()).pollMessages();
+
+        adapter.pollMessagesSafely(2_000);
+        verify(viplevApiPort, times(1)).pollMessages();
     }
 }

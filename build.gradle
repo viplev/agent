@@ -59,6 +59,10 @@ openApiGenerate {
 		documentationProvider: 'none',
 		serializationLibrary : 'jackson',
 	]
+	typeMappings = ['string+date-time': 'LocalDateTime']
+	importMappings = ['LocalDateTime': 'java.time.LocalDateTime']
+	// Prevent the generator from creating a DTO for java.time.LocalDateTime
+	languageSpecificPrimitives = ['java.time.LocalDateTime']
 }
 
 sourceSets {

@@ -2,7 +2,7 @@ package dk.viplev.agent.domain.services;
 
 import dk.viplev.agent.adapter.inbound.scheduling.MetricCollectorAdapter;
 import dk.viplev.agent.domain.exception.AgentException;
-import dk.viplev.agent.domain.model.ContainerStartRequest;
+import dk.viplev.agent.domain.model.BenchmarkRunStatus;
 import dk.viplev.agent.domain.model.RunContext;
 import dk.viplev.agent.generated.model.BenchmarkRunStatusUpdateDTO;
 import dk.viplev.agent.generated.model.MetricPerformanceDTO;
@@ -11,16 +11,14 @@ import dk.viplev.agent.port.outbound.container.ContainerPort;
 import dk.viplev.agent.port.outbound.rest.ViplevApiPort;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PreDestroy;
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.List;
-import java.util.Map;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -34,27 +32,57 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
 
     private static final Logger log = LoggerFactory.getLogger(BenchmarkExecutionServiceImpl.class);
     private static final AtomicInteger RUNNER_THREAD_COUNTER = new AtomicInteger(0);
-    private static final String K6_SCRIPT_CONTAINER_PATH = "/tmp/viplev-k6-script.js";
-
     private final RunContext runContext;
     private final ViplevApiPort viplevApiPort;
     private final MetricCollectorAdapter metricCollectorAdapter;
     private final ContainerPort containerPort;
-    private final String k6Image;
-    private final String k6Network;
+    private final K6Service k6Service;
     private final long completionPollIntervalMs;
+    private final long k6TimeoutMs;
+    private final int statusReasonMaxLength;
+    private final int containerLogMaxBytes;
+    private final int k6OutputLogMaxBytes;
     private final ExecutorService runExecutor;
 
+    @Autowired
     public BenchmarkExecutionServiceImpl(RunContext runContext,
                                          ViplevApiPort viplevApiPort,
                                          MetricCollectorAdapter metricCollectorAdapter,
                                          ContainerPort containerPort,
-                                         @Value("${agent.k6-image}") String k6Image,
-                                         @Value("${agent.k6-network}") String k6Network,
-                                         @Value("${agent.k6-completion-poll-interval-ms:1000}") long completionPollIntervalMs) {
-        this(runContext, viplevApiPort, metricCollectorAdapter, containerPort,
-                k6Image, k6Network, completionPollIntervalMs,
+                                         K6Service k6Service,
+                                         @Value("${agent.k6-completion-poll-interval-ms:1000}") long completionPollIntervalMs,
+                                         @Value("${agent.k6-timeout-ms:300000}") long k6TimeoutMs,
+                                         @Value("${agent.run-status-reason-max-length:2000}") int statusReasonMaxLength,
+                                         @Value("${agent.k6-log-max-bytes:4000}") int containerLogMaxBytes,
+                                         @Value("${agent.k6-output-log-max-bytes:500000}") int k6OutputLogMaxBytes) {
+        this(runContext, viplevApiPort, metricCollectorAdapter, containerPort, k6Service,
+                completionPollIntervalMs, k6TimeoutMs, statusReasonMaxLength, containerLogMaxBytes,
+                k6OutputLogMaxBytes,
                 Executors.newSingleThreadExecutor(daemonThreadFactory()));
+    }
+
+    BenchmarkExecutionServiceImpl(RunContext runContext,
+                                  ViplevApiPort viplevApiPort,
+                                  MetricCollectorAdapter metricCollectorAdapter,
+                                  ContainerPort containerPort,
+                                  K6Service k6Service,
+                                  long completionPollIntervalMs,
+                                  long k6TimeoutMs,
+                                  int statusReasonMaxLength,
+                                  int containerLogMaxBytes,
+                                  int k6OutputLogMaxBytes,
+                                  ExecutorService runExecutor) {
+        this.runContext = runContext;
+        this.viplevApiPort = viplevApiPort;
+        this.metricCollectorAdapter = metricCollectorAdapter;
+        this.containerPort = containerPort;
+        this.k6Service = k6Service;
+        this.completionPollIntervalMs = completionPollIntervalMs;
+        this.k6TimeoutMs = k6TimeoutMs;
+        this.statusReasonMaxLength = statusReasonMaxLength;
+        this.containerLogMaxBytes = containerLogMaxBytes;
+        this.k6OutputLogMaxBytes = k6OutputLogMaxBytes;
+        this.runExecutor = runExecutor;
     }
 
     BenchmarkExecutionServiceImpl(RunContext runContext,
@@ -65,14 +93,17 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
                                   String k6Network,
                                   long completionPollIntervalMs,
                                   ExecutorService runExecutor) {
-        this.runContext = runContext;
-        this.viplevApiPort = viplevApiPort;
-        this.metricCollectorAdapter = metricCollectorAdapter;
-        this.containerPort = containerPort;
-        this.k6Image = k6Image;
-        this.k6Network = k6Network;
-        this.completionPollIntervalMs = completionPollIntervalMs;
-        this.runExecutor = runExecutor;
+        this(runContext,
+                viplevApiPort,
+                metricCollectorAdapter,
+                containerPort,
+                new K6Service(viplevApiPort, k6Image, k6Network),
+                completionPollIntervalMs,
+                300000,
+                2000,
+                4000,
+                500000,
+                runExecutor);
     }
 
     @Override
@@ -85,6 +116,11 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
             var activeRun = runContext.getCurrentRun();
             log.warn("Ignoring PENDING_START for benchmark={} run={} because active run is {}",
                     benchmarkId, runId, activeRun.orElse(null));
+            return;
+        }
+
+        if (!runContext.markStatusIfMatch(benchmarkId, runId, BenchmarkRunStatus.PENDING_START)) {
+            runContext.deactivateIfMatch(benchmarkId, runId);
             return;
         }
 
@@ -101,11 +137,12 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
     }
 
     private void executeRun(UUID benchmarkId, UUID runId, String k6Instructions) {
-
         String k6ContainerId = null;
-        Path k6ScriptFile = null;
         boolean metricsStarted = false;
         boolean metricsStopped = false;
+        boolean startedStatusSent = false;
+        boolean runStopped = false;
+
         try {
             if (!runContext.isActive(benchmarkId, runId)) {
                 return;
@@ -115,11 +152,13 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
                 throw new AgentException("k6Instructions are required for startRun");
             }
 
-            if (!runContext.isActive(benchmarkId, runId)) {
+            if (!runContext.markStatusIfMatch(benchmarkId, runId, BenchmarkRunStatus.STARTED)) {
                 return;
             }
 
-            viplevApiPort.updateRunStatus(benchmarkId, runId, statusUpdate(BenchmarkRunStatusUpdateDTO.StatusEnum.STARTED, null));
+            viplevApiPort.updateRunStatus(benchmarkId, runId,
+                    statusUpdate(BenchmarkRunStatusUpdateDTO.StatusEnum.STARTED, null));
+            startedStatusSent = true;
 
             if (!runContext.isActive(benchmarkId, runId)) {
                 return;
@@ -134,21 +173,12 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
                 return;
             }
 
-            k6ScriptFile = createTempK6Script(k6Instructions);
-
-            if (!runContext.isActive(benchmarkId, runId)) {
+            k6ContainerId = startK6Container(k6Instructions);
+            if (runContext.setK6ContainerIdIfMatchAndNotStopped(benchmarkId, runId, k6ContainerId).isEmpty()) {
                 return;
             }
 
-            k6ContainerId = containerPort.startContainer(k6StartRequest(k6ScriptFile));
-            if (runContext.setK6ContainerId(k6ContainerId).isEmpty()) {
-                return;
-            }
-
-            boolean completedNaturally = waitForContainerToComplete(benchmarkId, runId, k6ContainerId);
-            if (!completedNaturally) {
-                return;
-            }
+            waitForContainerToComplete(benchmarkId, runId, k6ContainerId);
 
             if (!runContext.isActive(benchmarkId, runId)) {
                 return;
@@ -156,16 +186,28 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
 
             stopMetricsSilently();
             metricsStopped = true;
-            sendEmptyPerformanceMetrics(benchmarkId, runId);
-            viplevApiPort.updateRunStatus(benchmarkId, runId, statusUpdate(BenchmarkRunStatusUpdateDTO.StatusEnum.FINISHED, null));
-        } catch (Exception e) {
-            failRun(benchmarkId, runId, k6ContainerId, metricsStarted, e);
-        } finally {
-            if (!runContext.isActive(benchmarkId, runId)) {
-                cleanupCancelledRun(k6ContainerId, metricsStarted, metricsStopped);
+
+            String k6OutputLogs = containerPort.getContainerLogs(k6ContainerId, k6OutputLogMaxBytes);
+            MetricPerformanceDTO metrics = k6Service.parsePerformanceMetricsFromLogs(k6OutputLogs);
+            k6Service.sendPerformanceMetrics(benchmarkId, runId, metrics);
+
+            if (!runContext.markStatusIfMatch(benchmarkId, runId, BenchmarkRunStatus.FINISHED)) {
+                return;
             }
-            runContext.deactivateIfMatch(benchmarkId, runId);
-            deleteTempFileSilently(k6ScriptFile);
+
+            viplevApiPort.updateRunStatus(benchmarkId, runId,
+                    statusUpdate(BenchmarkRunStatusUpdateDTO.StatusEnum.FINISHED, null));
+        } catch (Exception e) {
+            if (runContext.isStopRequested(benchmarkId, runId)) {
+                runStopped = true;
+                return;
+            }
+            failRun(benchmarkId, runId, k6ContainerId, metricsStarted, metricsStopped, startedStatusSent, e);
+        } finally {
+            cleanup(k6ContainerId, metricsStarted, metricsStopped, runStopped);
+            if (!runContext.isStopRequested(benchmarkId, runId)) {
+                runContext.deactivateIfMatch(benchmarkId, runId);
+            }
         }
     }
 
@@ -176,20 +218,23 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
 
     @Override
     public void stopRun(UUID benchmarkId, UUID runId) {
-        var runToStop = runContext.deactivateIfMatch(benchmarkId, runId);
+        var runToStop = runContext.getCurrentRun();
         if (runToStop.isEmpty()) {
-            var currentRun = runContext.getCurrentRun();
-            if (currentRun.isPresent()) {
-                var run = currentRun.get();
-                log.warn("Ignoring PENDING_STOP for benchmark={} run={} because active run is benchmark={} run={}",
-                        benchmarkId, runId, run.benchmarkId(), run.runId());
-            } else {
-                log.warn("Ignoring PENDING_STOP for benchmark={} run={} because no run is active", benchmarkId, runId);
-            }
+            log.warn("Ignoring PENDING_STOP for benchmark={} run={} because no run is active", benchmarkId, runId);
             return;
         }
 
         var run = runToStop.get();
+        if (!run.benchmarkId().equals(benchmarkId) || !run.runId().equals(runId)) {
+            log.warn("Ignoring PENDING_STOP for benchmark={} run={} because active run is benchmark={} run={}",
+                    benchmarkId, runId, run.benchmarkId(), run.runId());
+            return;
+        }
+
+        if (!runContext.markStatusIfMatch(benchmarkId, runId, BenchmarkRunStatus.PENDING_STOP)) {
+            return;
+        }
+
         String stopFailureReason = null;
 
         try {
@@ -202,29 +247,42 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
         } finally {
             stopMetricsSilently();
             if (stopFailureReason == null) {
-                viplevApiPort.updateRunStatus(benchmarkId, runId,
-                        statusUpdate(BenchmarkRunStatusUpdateDTO.StatusEnum.STOPPED, null));
+                if (runContext.markStatusIfMatch(benchmarkId, runId, BenchmarkRunStatus.STOPPED)) {
+                    viplevApiPort.updateRunStatus(benchmarkId, runId,
+                            statusUpdate(BenchmarkRunStatusUpdateDTO.StatusEnum.STOPPED, null));
+                } else {
+                    log.info("Skipping STOPPED update for benchmark={} run={} because state transition was rejected",
+                            benchmarkId, runId);
+                }
             } else {
-                viplevApiPort.updateRunStatus(benchmarkId, runId,
-                        statusUpdate(BenchmarkRunStatusUpdateDTO.StatusEnum.FAILED,
-                                "Failed to stop benchmark run: " + stopFailureReason));
+                if (runContext.markStatusIfMatch(benchmarkId, runId, BenchmarkRunStatus.FAILED)) {
+                    viplevApiPort.updateRunStatus(benchmarkId, runId,
+                            statusUpdate(BenchmarkRunStatusUpdateDTO.StatusEnum.FAILED,
+                                    boundedReason("Failed to stop benchmark run: " + stopFailureReason)));
+                }
             }
+            runContext.deactivateIfMatch(benchmarkId, runId);
         }
     }
 
-    private ContainerStartRequest k6StartRequest(Path scriptFile) {
-        return new ContainerStartRequest(
-                k6Image,
-                Map.of(),
-                Map.of(scriptFile.toAbsolutePath().toString(), K6_SCRIPT_CONTAINER_PATH),
-                k6Network,
-                List.of("run", K6_SCRIPT_CONTAINER_PATH));
+    private String startK6Container(String k6Instructions) {
+        return containerPort.startContainer(k6Service.startRequest(k6Instructions));
     }
 
-    private boolean waitForContainerToComplete(UUID benchmarkId, UUID runId, String containerId) {
+    private void waitForContainerToComplete(UUID benchmarkId, UUID runId, String containerId) {
+        Instant startedAt = Instant.now();
+
         while (true) {
+            if (runContext.isStopRequested(benchmarkId, runId)) {
+                throw new StopRequestedException();
+            }
+
             if (!runContext.isActive(benchmarkId, runId)) {
-                return false;
+                return;
+            }
+
+            if (Duration.between(startedAt, Instant.now()).toMillis() > k6TimeoutMs) {
+                throw new AgentException("K6 execution timed out after " + k6TimeoutMs + " ms");
             }
 
             boolean isRunning = containerPort.isContainerRunning(containerId);
@@ -241,7 +299,7 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
             if (exitCode != 0L) {
                 throw new AgentException("K6 container exited with code " + exitCode);
             }
-            return true;
+            return;
         }
     }
 
@@ -249,6 +307,8 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
                          UUID runId,
                          String k6ContainerId,
                          boolean metricsStarted,
+                         boolean metricsStopped,
+                         boolean startedStatusSent,
                          Exception exception) {
         try {
             if (k6ContainerId != null) {
@@ -258,7 +318,7 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
             log.warn("Failed to stop k6 container during failure handling", stopException);
         }
 
-        if (metricsStarted) {
+        if (metricsStarted && !metricsStopped) {
             stopMetricsSilently();
         }
 
@@ -266,9 +326,35 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
             return;
         }
 
+        if (!runContext.markStatusIfMatch(benchmarkId, runId, BenchmarkRunStatus.FAILED)) {
+            return;
+        }
+
         String reason = exception.getMessage() == null ? "Unknown run failure" : exception.getMessage();
+        if (startedStatusSent) {
+            reason = reason + logsSuffix(k6ContainerId);
+        }
+        log.warn("Benchmark run failed for benchmark={} run={}: {}", benchmarkId, runId, reason, exception);
         viplevApiPort.updateRunStatus(benchmarkId, runId,
-                statusUpdate(BenchmarkRunStatusUpdateDTO.StatusEnum.FAILED, reason));
+                statusUpdate(BenchmarkRunStatusUpdateDTO.StatusEnum.FAILED, boundedReason(reason)));
+    }
+
+    private void cleanup(String k6ContainerId,
+                         boolean metricsStarted,
+                         boolean metricsStopped,
+                         boolean runStopped) {
+        if (k6ContainerId != null) {
+            stopContainerSilently(k6ContainerId);
+            removeContainerSilently(k6ContainerId);
+        }
+
+        if (metricsStarted && !metricsStopped) {
+            stopMetricsSilently();
+        }
+
+        if (runStopped) {
+            log.info("Run was stopped before completion");
+        }
     }
 
     private void stopMetricsSilently() {
@@ -280,10 +366,6 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
     }
 
     private void stopContainerSilently(String containerId) {
-        if (containerId == null) {
-            return;
-        }
-
         try {
             containerPort.stopContainer(containerId);
         } catch (Exception e) {
@@ -291,42 +373,56 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
         }
     }
 
-    private void cleanupCancelledRun(String k6ContainerId, boolean metricsStarted, boolean metricsStopped) {
-        stopContainerSilently(k6ContainerId);
-        if (metricsStarted && !metricsStopped) {
-            stopMetricsSilently();
-        }
-    }
-
-    private Path createTempK6Script(String k6Instructions) {
+    private void removeContainerSilently(String containerId) {
         try {
-            Path scriptFile = Files.createTempFile("viplev-k6-", ".js");
-            Files.writeString(scriptFile, k6Instructions);
-            return scriptFile;
-        } catch (IOException e) {
-            throw new AgentException("Failed to write temporary k6 script file", e);
+            containerPort.removeContainer(containerId);
+        } catch (Exception e) {
+            log.warn("Failed to remove K6 container {} during cleanup", containerId, e);
         }
-    }
-
-    private void deleteTempFileSilently(Path scriptFile) {
-        if (scriptFile == null) {
-            return;
-        }
-
-        try {
-            Files.deleteIfExists(scriptFile);
-        } catch (IOException e) {
-            log.warn("Failed to delete temporary k6 script file {}", scriptFile, e);
-        }
-    }
-
-    private void sendEmptyPerformanceMetrics(UUID benchmarkId, UUID runId) {
-        viplevApiPort.sendPerformanceMetrics(benchmarkId, runId,
-                new MetricPerformanceDTO().httpMetrics(List.of()).vusMetrics(List.of()));
     }
 
     private BenchmarkRunStatusUpdateDTO statusUpdate(BenchmarkRunStatusUpdateDTO.StatusEnum status, String reason) {
         return new BenchmarkRunStatusUpdateDTO().status(status).statusReason(reason);
+    }
+
+    private String logsSuffix(String containerId) {
+        if (containerId == null) {
+            return "";
+        }
+
+        try {
+            String logs = containerPort.getContainerLogs(containerId, containerLogMaxBytes);
+            if (logs == null || logs.isBlank()) {
+                return "";
+            }
+            return "; logs: " + logs.strip();
+        } catch (Exception e) {
+            log.debug("Failed to read container logs for {}", containerId, e);
+            return "";
+        }
+    }
+
+    private String boundedReason(String reason) {
+        if (reason == null) {
+            return null;
+        }
+
+        int maxLength = Math.max(0, statusReasonMaxLength);
+        if (maxLength == 0) {
+            return "";
+        }
+
+        if (reason.length() <= maxLength) {
+            return reason;
+        }
+
+        String suffix = "...[truncated]";
+        if (maxLength <= suffix.length()) {
+            return suffix.substring(0, maxLength);
+        }
+
+        int available = maxLength - suffix.length();
+        return reason.substring(0, available) + suffix;
     }
 
     private void sleep(long millis) {
@@ -345,5 +441,8 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
             thread.setDaemon(true);
             return thread;
         };
+    }
+
+    private static final class StopRequestedException extends RuntimeException {
     }
 }

@@ -18,9 +18,13 @@ public interface ContainerPort {
 
     void stopContainer(String containerId);
 
+    void removeContainer(String containerId);
+
     boolean isContainerRunning(String containerId);
 
     Long getContainerExitCode(String containerId);
+
+    String getContainerLogs(String containerId, int maxBytes);
 
     void watchContainerEvents(Consumer<ContainerEvent> callback);
 }

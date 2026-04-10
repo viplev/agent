@@ -8,5 +8,15 @@ public record ContainerStartRequest(
         Map<String, String> env,
         Map<String, String> volumes,
         String network,
-        List<String> command
-) {}
+        List<String> command,
+        List<String> entrypoint
+) {
+
+    public ContainerStartRequest(String imageName,
+                                 Map<String, String> env,
+                                 Map<String, String> volumes,
+                                 String network,
+                                 List<String> command) {
+        this(imageName, env, volumes, network, command, null);
+    }
+}

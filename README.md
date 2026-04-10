@@ -136,6 +136,10 @@ The agent can set a run to `STARTED`, `FINISHED`, `FAILED`, or `STOPPED`. The st
 | `VIPLEV_TOKEN` | string | *(none)* | Yes | Bearer token for agent authentication |
 | `VIPLEV_ENVIRONMENT_ID` | string (UUID) | *(none)* | Yes | UUID of the environment this agent belongs to |
 | `VIPLEV_RUNTIME` | string | `docker` | No | Container runtime profile: `docker` or `kubernetes` |
+| `VIPLEV_CADVISOR_IMAGE` | string | `gcr.io/cadvisor/cadvisor:v0.51.0` | No | cAdvisor image used by the agent |
+| `VIPLEV_NODE_EXPORTER_IMAGE` | string | `prom/node-exporter:v1.9.0` | No | node_exporter image used by the agent |
+| `VIPLEV_K6_IMAGE` | string | `grafana/k6:0.53.0` | No | K6 image used for benchmark execution |
+| `VIPLEV_K6_TIMEOUT_MS` | number | `300000` | No | K6 execution timeout in milliseconds |
 
 These map to Spring properties `viplev.url`, `viplev.token`, `viplev.environment-id`, and `spring.profiles.active` in `application.properties`.
 
@@ -188,10 +192,16 @@ These map to Spring properties `viplev.url`, `viplev.token`, `viplev.environment
 
 ```bash
 docker run -d \
+  --pull always \
+  --restart unless-stopped \
   --name viplev-agent \
   -e VIPLEV_URL=https://viplev.example.com \
   -e VIPLEV_TOKEN=<token-from-viplev> \
   -e VIPLEV_ENVIRONMENT_ID=<environment-uuid> \
+  -e VIPLEV_CADVISOR_IMAGE=gcr.io/cadvisor/cadvisor:v0.51.0 \
+  -e VIPLEV_NODE_EXPORTER_IMAGE=prom/node-exporter:v1.9.0 \
+  -e VIPLEV_K6_IMAGE=grafana/k6:0.53.0 \
+  -e VIPLEV_K6_TIMEOUT_MS=300000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   ghcr.io/viplev/agent:latest
 ```

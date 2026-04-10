@@ -1,11 +1,15 @@
 package dk.viplev.agent.config;
 
 import dk.viplev.agent.generated.api.AgentApi;
-import dk.viplev.agent.generated.api.BenchmarkApi;
 import dk.viplev.agent.generated.invoker.ApiClient;
 import dk.viplev.agent.generated.invoker.auth.HttpBearerAuth;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.converter.HttpMessageConverter;
+import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
+import org.springframework.web.client.RestTemplate;
 
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -25,21 +29,47 @@ class ViplevApiConfigTest {
     }
 
     @Test
+    void viplevApiClient_jacksonSupportsFlexibleLocalDateAndOffsetDateParsing() throws Exception {
+        RestTemplate restTemplate = extractRestTemplate(config.viplevApiClient("https://viplev.example.com", "test-token"));
+        MappingJackson2HttpMessageConverter jsonConverter = null;
+        for (HttpMessageConverter<?> converter : restTemplate.getMessageConverters()) {
+            if (converter instanceof MappingJackson2HttpMessageConverter mappingJackson2HttpMessageConverter) {
+                jsonConverter = mappingJackson2HttpMessageConverter;
+                break;
+            }
+        }
+
+        assertThat(jsonConverter).isNotNull();
+        var mapper = jsonConverter.getObjectMapper();
+
+        var localFromLocal = mapper.readValue("\"2026-04-10T08:26:33.431800541\"", LocalDateTime.class);
+        var localFromOffset = mapper.readValue("\"2026-04-10T08:26:33.431800541Z\"", LocalDateTime.class);
+        var offsetFromOffset = mapper.readValue("\"2026-04-10T08:26:33.431800541Z\"", OffsetDateTime.class);
+        var offsetFromLocal = mapper.readValue("\"2026-04-10T08:26:33.431800541\"", OffsetDateTime.class);
+
+        assertThat(localFromLocal).isEqualTo(LocalDateTime.parse("2026-04-10T08:26:33.431800541"));
+        assertThat(localFromOffset).isEqualTo(LocalDateTime.parse("2026-04-10T08:26:33.431800541"));
+        assertThat(offsetFromOffset).isEqualTo(OffsetDateTime.parse("2026-04-10T08:26:33.431800541Z"));
+        assertThat(offsetFromLocal).isEqualTo(OffsetDateTime.parse("2026-04-10T08:26:33.431800541Z"));
+    }
+
+    private RestTemplate extractRestTemplate(ApiClient client) {
+        try {
+            var field = ApiClient.class.getDeclaredField("restTemplate");
+            field.setAccessible(true);
+            return (RestTemplate) field.get(client);
+        } catch (ReflectiveOperationException e) {
+            throw new RuntimeException("Failed to extract RestTemplate from ApiClient", e);
+        }
+    }
+
+    @Test
     void agentApi_usesProvidedApiClient() {
         ApiClient client = config.viplevApiClient("https://viplev.example.com", "test-token");
 
         AgentApi agentApi = config.agentApi(client);
 
         assertThat(agentApi.getApiClient()).isSameAs(client);
-    }
-
-    @Test
-    void benchmarkApi_usesProvidedApiClient() {
-        ApiClient client = config.viplevApiClient("https://viplev.example.com", "test-token");
-
-        BenchmarkApi benchmarkApi = config.benchmarkApi(client);
-
-        assertThat(benchmarkApi.getApiClient()).isSameAs(client);
     }
 
     @Test

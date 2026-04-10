@@ -8,8 +8,6 @@ import org.junit.jupiter.api.Test;
 import org.mapstruct.factory.Mappers;
 
 import java.time.LocalDateTime;
-import java.time.OffsetDateTime;
-import java.time.ZoneId;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -43,8 +41,7 @@ class ResourceMetricMapperTest {
 
         MetricDataPointDTO dto = mapper.toDataPoint(metric);
 
-        OffsetDateTime expectedTime = collectedAt.atZone(ZoneId.systemDefault()).toOffsetDateTime();
-        assertThat(dto.getCollectedAt()).isEqualTo(expectedTime);
+        assertThat(dto.getCollectedAt()).isEqualTo(collectedAt);
         assertThat(dto.getCpuPercentage()).isCloseTo(45.5, within(0.01));
         assertThat(dto.getMemoryUsageBytes()).isCloseTo(1024.0, within(0.01));
         assertThat(dto.getMemoryLimitBytes()).isCloseTo(2048.0, within(0.01));

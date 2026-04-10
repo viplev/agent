@@ -2,9 +2,7 @@ package dk.viplev.agent.adapter.outbound.rest;
 
 import dk.viplev.agent.domain.exception.ViplevApiException;
 import dk.viplev.agent.generated.api.AgentApi;
-import dk.viplev.agent.generated.api.BenchmarkApi;
 import dk.viplev.agent.generated.model.BenchmarkRunStatusUpdateDTO;
-import dk.viplev.agent.generated.model.BenchmarkDTO;
 import dk.viplev.agent.generated.model.MessageDTO;
 import dk.viplev.agent.generated.model.MetricPerformanceDTO;
 import dk.viplev.agent.generated.model.MetricResourceDTO;
@@ -34,9 +32,6 @@ class ViplevApiAdapterTest {
     @Mock
     private AgentApi agentApi;
 
-    @Mock
-    private BenchmarkApi benchmarkApi;
-
     private final UUID environmentId = UUID.randomUUID();
     private final UUID benchmarkId = UUID.randomUUID();
     private final UUID runId = UUID.randomUUID();
@@ -45,7 +40,7 @@ class ViplevApiAdapterTest {
 
     @BeforeEach
     void setUp() {
-        adapter = new ViplevApiAdapter(agentApi, benchmarkApi, environmentId);
+        adapter = new ViplevApiAdapter(agentApi, environmentId);
     }
 
     @Test
@@ -66,17 +61,6 @@ class ViplevApiAdapterTest {
         adapter.registerServices(registration);
 
         verify(agentApi).registerServices(environmentId, registration);
-    }
-
-    @Test
-    void getBenchmark_delegatesToBenchmarkApi() {
-        var benchmark = new BenchmarkDTO().name("benchmark");
-        when(benchmarkApi.getBenchmark(benchmarkId, environmentId)).thenReturn(benchmark);
-
-        var result = adapter.getBenchmark(benchmarkId);
-
-        assertThat(result).isEqualTo(benchmark);
-        verify(benchmarkApi).getBenchmark(benchmarkId, environmentId);
     }
 
     @Test
@@ -165,14 +149,4 @@ class ViplevApiAdapterTest {
                 .hasMessageContaining("Failed to send performance metrics");
     }
 
-    @Test
-    void getBenchmark_wrapsClientError() {
-        when(benchmarkApi.getBenchmark(benchmarkId, environmentId))
-                .thenThrow(new HttpClientErrorException(HttpStatus.NOT_FOUND, "Not Found"));
-
-        assertThatThrownBy(() -> adapter.getBenchmark(benchmarkId))
-                .isInstanceOf(ViplevApiException.class)
-                .hasFieldOrPropertyWithValue("statusCode", 404)
-                .hasMessageContaining("Failed to fetch benchmark");
-    }
 }

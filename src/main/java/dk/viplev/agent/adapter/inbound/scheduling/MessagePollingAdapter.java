@@ -4,9 +4,11 @@ import dk.viplev.agent.domain.model.RunContext;
 import dk.viplev.agent.generated.model.BenchmarkDTO;
 import dk.viplev.agent.generated.model.MessageDTO;
 import dk.viplev.agent.port.inbound.BenchmarkExecutionUseCase;
+import dk.viplev.agent.port.inbound.ServiceDiscoveryUseCase;
 import dk.viplev.agent.port.outbound.rest.ViplevApiPort;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -17,25 +19,30 @@ import java.util.UUID;
 
 @Component
 @Profile("docker")
+@ConditionalOnProperty(name = "agent.message-polling-enabled", havingValue = "true", matchIfMissing = true)
 public class MessagePollingAdapter {
 
     private static final Logger log = LoggerFactory.getLogger(MessagePollingAdapter.class);
 
     private final ViplevApiPort viplevApiPort;
     private final BenchmarkExecutionUseCase benchmarkExecutionUseCase;
+    private final ServiceDiscoveryUseCase serviceDiscoveryUseCase;
     private final RunContext runContext;
     private final long idlePollIntervalMs;
     private final long activePollIntervalMs;
 
     private volatile long lastPollAtMs;
+    private volatile boolean initialServiceSyncCompleted;
 
     public MessagePollingAdapter(ViplevApiPort viplevApiPort,
                                  BenchmarkExecutionUseCase benchmarkExecutionUseCase,
+                                 ServiceDiscoveryUseCase serviceDiscoveryUseCase,
                                  RunContext runContext,
                                  @Value("${agent.message-polling-idle-interval-ms:15000}") long idlePollIntervalMs,
                                  @Value("${agent.message-polling-active-interval-ms:5000}") long activePollIntervalMs) {
         this.viplevApiPort = viplevApiPort;
         this.benchmarkExecutionUseCase = benchmarkExecutionUseCase;
+        this.serviceDiscoveryUseCase = serviceDiscoveryUseCase;
         this.runContext = runContext;
         this.idlePollIntervalMs = idlePollIntervalMs;
         this.activePollIntervalMs = activePollIntervalMs;
@@ -47,6 +54,18 @@ public class MessagePollingAdapter {
     }
 
     void pollMessagesSafely(long nowMs) {
+        if (!initialServiceSyncCompleted) {
+            try {
+                log.info("Performing initial service sync before message polling");
+                serviceDiscoveryUseCase.syncServices();
+                initialServiceSyncCompleted = true;
+                log.info("Initial service sync completed; message polling enabled");
+            } catch (Exception e) {
+                log.warn("Failed to sync services with VIPLEV; skipping message polling until sync succeeds", e);
+                return;
+            }
+        }
+
         if (!shouldPollNow(nowMs)) {
             return;
         }
@@ -102,8 +121,13 @@ public class MessagePollingAdapter {
         switch (message.getMessageType()) {
             case PENDING_START -> {
                 log.info("Received PENDING_START for benchmark={} run={}", benchmarkId, runId);
-                BenchmarkDTO benchmark = viplevApiPort.getBenchmark(benchmarkId);
-                String k6Instructions = benchmark != null ? benchmark.getK6Instructions() : null;
+                BenchmarkDTO benchmark = message.getBenchmarkData();
+                if (benchmark == null || benchmark.getK6Instructions() == null || benchmark.getK6Instructions().isBlank()) {
+                    log.warn("Received PENDING_START for benchmark={} run={} without benchmarkData.k6Instructions; ignoring",
+                            benchmarkId, runId);
+                    return;
+                }
+                String k6Instructions = benchmark.getK6Instructions();
                 benchmarkExecutionUseCase.startRun(benchmarkId, runId, k6Instructions);
             }
             case PENDING_STOP -> {
