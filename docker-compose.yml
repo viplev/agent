@@ -1,12 +1,16 @@
 services:
   agent:
     image: ghcr.io/viplev/agent:latest
+    pull_policy: always
     build: .
+    restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - VIPLEV_URL=${VIPLEV_URL}
       - VIPLEV_TOKEN=${VIPLEV_TOKEN}
       - VIPLEV_ENVIRONMENT_ID=${VIPLEV_ENVIRONMENT_ID}
-    ports:
-      - "8080:8080"
+      - VIPLEV_CADVISOR_IMAGE=${VIPLEV_CADVISOR_IMAGE:-gcr.io/cadvisor/cadvisor:v0.51.0}
+      - VIPLEV_NODE_EXPORTER_IMAGE=${VIPLEV_NODE_EXPORTER_IMAGE:-prom/node-exporter:v1.9.0}
+      - VIPLEV_K6_IMAGE=${VIPLEV_K6_IMAGE:-grafana/k6:0.53.0}
+      - VIPLEV_K6_TIMEOUT_MS=${VIPLEV_K6_TIMEOUT_MS:-300000}

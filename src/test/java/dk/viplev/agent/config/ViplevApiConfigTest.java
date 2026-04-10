@@ -1,7 +1,6 @@
 package dk.viplev.agent.config;
 
 import dk.viplev.agent.generated.api.AgentApi;
-import dk.viplev.agent.generated.api.BenchmarkApi;
 import dk.viplev.agent.generated.invoker.ApiClient;
 import dk.viplev.agent.generated.invoker.auth.HttpBearerAuth;
 import org.junit.jupiter.api.Test;
@@ -31,15 +30,6 @@ class ViplevApiConfigTest {
         AgentApi agentApi = config.agentApi(client);
 
         assertThat(agentApi.getApiClient()).isSameAs(client);
-    }
-
-    @Test
-    void benchmarkApi_usesProvidedApiClient() {
-        ApiClient client = config.viplevApiClient("https://viplev.example.com", "test-token");
-
-        BenchmarkApi benchmarkApi = config.benchmarkApi(client);
-
-        assertThat(benchmarkApi.getApiClient()).isSameAs(client);
     }
 
     @Test

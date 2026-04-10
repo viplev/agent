@@ -2,9 +2,7 @@ package dk.viplev.agent.adapter.outbound.rest;
 
 import dk.viplev.agent.domain.exception.ViplevApiException;
 import dk.viplev.agent.generated.api.AgentApi;
-import dk.viplev.agent.generated.api.BenchmarkApi;
 import dk.viplev.agent.generated.model.BenchmarkRunStatusUpdateDTO;
-import dk.viplev.agent.generated.model.BenchmarkDTO;
 import dk.viplev.agent.generated.model.MessageDTO;
 import dk.viplev.agent.generated.model.MetricPerformanceDTO;
 import dk.viplev.agent.generated.model.MetricResourceDTO;
@@ -26,12 +24,10 @@ public class ViplevApiAdapter implements ViplevApiPort {
     private static final Logger log = LoggerFactory.getLogger(ViplevApiAdapter.class);
 
     private final AgentApi agentApi;
-    private final BenchmarkApi benchmarkApi;
     private final UUID viplevEnvironmentId;
 
-    public ViplevApiAdapter(AgentApi agentApi, BenchmarkApi benchmarkApi, UUID viplevEnvironmentId) {
+    public ViplevApiAdapter(AgentApi agentApi, UUID viplevEnvironmentId) {
         this.agentApi = agentApi;
-        this.benchmarkApi = benchmarkApi;
         this.viplevEnvironmentId = viplevEnvironmentId;
     }
 
@@ -39,12 +35,6 @@ public class ViplevApiAdapter implements ViplevApiPort {
     public List<MessageDTO> pollMessages() {
         log.debug("Polling messages for environment {}", viplevEnvironmentId);
         return execute("poll messages", () -> agentApi.listMessages(viplevEnvironmentId));
-    }
-
-    @Override
-    public BenchmarkDTO getBenchmark(UUID benchmarkId) {
-        log.debug("Fetching benchmark {} for environment {}", benchmarkId, viplevEnvironmentId);
-        return execute("fetch benchmark", () -> benchmarkApi.getBenchmark(benchmarkId, viplevEnvironmentId));
     }
 
     @Override

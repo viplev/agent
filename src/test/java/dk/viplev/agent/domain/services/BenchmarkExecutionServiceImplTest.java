@@ -20,6 +20,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -62,6 +63,7 @@ class BenchmarkExecutionServiceImplTest {
         when(containerPort.startContainer(any(ContainerStartRequest.class))).thenReturn("k6-id");
         when(containerPort.isContainerRunning("k6-id")).thenReturn(true).thenReturn(false);
         when(containerPort.getContainerExitCode("k6-id")).thenReturn(0L);
+        when(containerPort.getContainerLogs("k6-id", 500000)).thenReturn("{\"type\":\"Point\",\"data\":{\"time\":\"2026-01-01T10:00:00Z\",\"value\":10,\"metric\":\"vus\",\"tags\":{}}}");
 
         service.startRun(BENCHMARK_ID, RUN_ID, "script");
 
@@ -72,15 +74,17 @@ class BenchmarkExecutionServiceImplTest {
         verify(metricCollectorAdapter).startCollection(BENCHMARK_ID, RUN_ID);
         verify(metricCollectorAdapter).stopCollection();
         verify(viplevApiPort).sendPerformanceMetrics(any(), any(), any());
+        verify(containerPort).removeContainer("k6-id");
         assertThat(runContext.isActive()).isFalse();
 
         var requestCaptor = ArgumentCaptor.forClass(ContainerStartRequest.class);
         verify(containerPort).startContainer(requestCaptor.capture());
         var request = requestCaptor.getValue();
-        assertThat(request.command()).containsExactly("run", "/tmp/viplev-k6-script.js");
-        assertThat(request.volumes()).hasSize(1);
-        assertThat(request.volumes().values()).containsExactly("/tmp/viplev-k6-script.js");
-        assertThat(request.env()).isEmpty();
+        assertThat(request.command().size()).isEqualTo(2);
+        assertThat(request.command().get(0)).isEqualTo("-c");
+        assertThat(request.command().get(1)).contains("k6 run --quiet --out json=/tmp/viplev-k6-output.json /tmp/viplev-k6-script.js && cat /tmp/viplev-k6-output.json");
+        assertThat(request.volumes()).isEmpty();
+        assertThat(request.env()).containsKey("VIPLEV_K6_SCRIPT_BASE64");
     }
 
     @Test
@@ -89,6 +93,7 @@ class BenchmarkExecutionServiceImplTest {
         when(containerPort.startContainer(any(ContainerStartRequest.class))).thenReturn("k6-id");
         when(containerPort.isContainerRunning("k6-id")).thenReturn(false);
         when(containerPort.getContainerExitCode("k6-id")).thenReturn(137L);
+        when(containerPort.getContainerLogs("k6-id", 4000)).thenReturn("k6 failed");
 
         service.startRun(BENCHMARK_ID, RUN_ID, "script");
 
@@ -97,6 +102,7 @@ class BenchmarkExecutionServiceImplTest {
         assertThat(statusCaptor.getAllValues().get(0).getStatus()).isEqualTo(BenchmarkRunStatusUpdateDTO.StatusEnum.STARTED);
         assertThat(statusCaptor.getAllValues().get(1).getStatus()).isEqualTo(BenchmarkRunStatusUpdateDTO.StatusEnum.FAILED);
         assertThat(statusCaptor.getAllValues().get(1).getStatusReason()).contains("137");
+        verify(containerPort).removeContainer("k6-id");
     }
 
     @Test
@@ -105,6 +111,7 @@ class BenchmarkExecutionServiceImplTest {
         when(containerPort.startContainer(any(ContainerStartRequest.class))).thenReturn("k6-id");
         when(containerPort.isContainerRunning("k6-id")).thenReturn(false);
         when(containerPort.getContainerExitCode("k6-id")).thenReturn(null);
+        when(containerPort.getContainerLogs("k6-id", 4000)).thenReturn("k6 logs");
 
         service.startRun(BENCHMARK_ID, RUN_ID, "script");
 
@@ -223,6 +230,96 @@ class BenchmarkExecutionServiceImplTest {
         verify(metricCollectorAdapter, never()).startCollection(any(), any());
         verify(containerPort, never()).startContainer(any());
         assertThat(runContext.isActive()).isFalse();
+    }
+
+    @Test
+    void startRun_timeout_updatesFailedWithExplicitReason() {
+        service = new BenchmarkExecutionServiceImpl(
+                runContext,
+                viplevApiPort,
+                metricCollectorAdapter,
+                containerPort,
+                new K6Service(viplevApiPort, "grafana/k6:latest", "viplev_agent"),
+                0,
+                1,
+                200,
+                200,
+                200,
+                new DirectExecutorService());
+
+        when(metricCollectorAdapter.startCollection(BENCHMARK_ID, RUN_ID)).thenReturn(true);
+        when(containerPort.startContainer(any(ContainerStartRequest.class))).thenReturn("k6-id");
+        when(containerPort.isContainerRunning("k6-id")).thenReturn(true);
+        when(containerPort.getContainerLogs("k6-id", 4000)).thenReturn("timeout logs");
+
+        service.startRun(BENCHMARK_ID, RUN_ID, "script");
+
+        var statusCaptor = ArgumentCaptor.forClass(BenchmarkRunStatusUpdateDTO.class);
+        verify(viplevApiPort, org.mockito.Mockito.times(2)).updateRunStatus(any(), any(), statusCaptor.capture());
+        assertThat(statusCaptor.getAllValues().get(1).getStatus()).isEqualTo(BenchmarkRunStatusUpdateDTO.StatusEnum.FAILED);
+        assertThat(statusCaptor.getAllValues().get(1).getStatusReason()).contains("timed out");
+        verify(containerPort, atLeastOnce()).stopContainer("k6-id");
+        verify(containerPort).removeContainer("k6-id");
+    }
+
+    @Test
+    void startRun_nonZeroExit_statusReasonIsBounded() {
+        service = new BenchmarkExecutionServiceImpl(
+                runContext,
+                viplevApiPort,
+                metricCollectorAdapter,
+                containerPort,
+                new K6Service(viplevApiPort, "grafana/k6:latest", "viplev_agent"),
+                0,
+                300000,
+                40,
+                500,
+                500,
+                new DirectExecutorService());
+
+        when(metricCollectorAdapter.startCollection(BENCHMARK_ID, RUN_ID)).thenReturn(true);
+        when(containerPort.startContainer(any(ContainerStartRequest.class))).thenReturn("k6-id");
+        when(containerPort.isContainerRunning("k6-id")).thenReturn(false);
+        when(containerPort.getContainerExitCode("k6-id")).thenReturn(137L);
+        when(containerPort.getContainerLogs("k6-id", 500)).thenReturn("x".repeat(500));
+
+        service.startRun(BENCHMARK_ID, RUN_ID, "script");
+
+        var statusCaptor = ArgumentCaptor.forClass(BenchmarkRunStatusUpdateDTO.class);
+        verify(viplevApiPort, org.mockito.Mockito.times(2)).updateRunStatus(any(), any(), statusCaptor.capture());
+        var reason = statusCaptor.getAllValues().get(1).getStatusReason();
+        assertThat(reason.length()).isLessThanOrEqualTo(40);
+        assertThat(reason).contains("truncated");
+    }
+
+    @Test
+    void startRun_parseFailure_updatesFailedAndSkipsMetricSend() {
+        service = new BenchmarkExecutionServiceImpl(
+                runContext,
+                viplevApiPort,
+                metricCollectorAdapter,
+                containerPort,
+                new K6Service(viplevApiPort, "grafana/k6:latest", "viplev_agent"),
+                0,
+                300000,
+                200,
+                200,
+                200,
+                new DirectExecutorService());
+
+        when(metricCollectorAdapter.startCollection(BENCHMARK_ID, RUN_ID)).thenReturn(true);
+        when(containerPort.startContainer(any(ContainerStartRequest.class))).thenReturn("k6-id");
+        when(containerPort.isContainerRunning("k6-id")).thenReturn(false);
+        when(containerPort.getContainerExitCode("k6-id")).thenReturn(0L);
+        when(containerPort.getContainerLogs("k6-id", 200)).thenReturn("no json here");
+
+        service.startRun(BENCHMARK_ID, RUN_ID, "script");
+
+        var statusCaptor = ArgumentCaptor.forClass(BenchmarkRunStatusUpdateDTO.class);
+        verify(viplevApiPort, org.mockito.Mockito.times(2)).updateRunStatus(any(), any(), statusCaptor.capture());
+        assertThat(statusCaptor.getAllValues().get(1).getStatus()).isEqualTo(BenchmarkRunStatusUpdateDTO.StatusEnum.FAILED);
+        assertThat(statusCaptor.getAllValues().get(1).getStatusReason()).contains("No K6 metrics found");
+        verify(viplevApiPort, never()).sendPerformanceMetrics(any(), any(), any());
     }
 
     private static final class DirectExecutorService extends java.util.concurrent.AbstractExecutorService {

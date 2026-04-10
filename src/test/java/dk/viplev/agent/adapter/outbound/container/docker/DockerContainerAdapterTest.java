@@ -8,10 +8,13 @@ import com.github.dockerjava.api.command.EventsCmd;
 import com.github.dockerjava.api.command.InspectContainerCmd;
 import com.github.dockerjava.api.command.InspectContainerResponse;
 import com.github.dockerjava.api.command.ListContainersCmd;
+import com.github.dockerjava.api.command.LogContainerCmd;
+import com.github.dockerjava.api.command.RemoveContainerCmd;
 import com.github.dockerjava.api.command.StartContainerCmd;
 import com.github.dockerjava.api.command.StatsCmd;
 import com.github.dockerjava.api.command.StopContainerCmd;
 import com.github.dockerjava.api.exception.DockerException;
+import com.github.dockerjava.api.exception.NotFoundException;
 import com.github.dockerjava.api.model.BlkioStatEntry;
 import com.github.dockerjava.api.model.BlkioStatsConfig;
 import com.github.dockerjava.api.model.Container;
@@ -19,8 +22,10 @@ import com.github.dockerjava.api.model.CpuStatsConfig;
 import com.github.dockerjava.api.model.CpuUsageConfig;
 import com.github.dockerjava.api.model.Event;
 import com.github.dockerjava.api.model.EventActor;
+import com.github.dockerjava.api.model.Frame;
 import com.github.dockerjava.api.model.HostConfig;
 import com.github.dockerjava.api.model.MemoryStatsConfig;
+import com.github.dockerjava.api.model.StreamType;
 import com.github.dockerjava.api.model.StatisticNetworksConfig;
 import com.github.dockerjava.api.model.Statistics;
 import dk.viplev.agent.domain.exception.ContainerRuntimeException;
@@ -224,6 +229,52 @@ class DockerContainerAdapterTest {
         adapter.stopContainer("container1");
 
         verify(stopCmd).exec();
+    }
+
+    @Test
+    void removeContainer_delegatesToDockerClient() {
+        var removeCmd = mock(RemoveContainerCmd.class);
+        when(dockerClient.removeContainerCmd("container1")).thenReturn(removeCmd);
+        when(removeCmd.withForce(true)).thenReturn(removeCmd);
+        when(removeCmd.withRemoveVolumes(true)).thenReturn(removeCmd);
+
+        adapter.removeContainer("container1");
+
+        verify(removeCmd).exec();
+    }
+
+    @Test
+    void removeContainer_whenNotFound_isIgnored() {
+        var removeCmd = mock(RemoveContainerCmd.class);
+        when(dockerClient.removeContainerCmd("container1")).thenReturn(removeCmd);
+        when(removeCmd.withForce(true)).thenReturn(removeCmd);
+        when(removeCmd.withRemoveVolumes(true)).thenReturn(removeCmd);
+        when(removeCmd.exec()).thenThrow(new NotFoundException("not found"));
+
+        adapter.removeContainer("container1");
+
+        verify(removeCmd).exec();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void getContainerLogs_returnsBoundedLogs() {
+        var logCmd = mock(LogContainerCmd.class);
+        when(dockerClient.logContainerCmd("container1")).thenReturn(logCmd);
+        when(logCmd.withStdOut(true)).thenReturn(logCmd);
+        when(logCmd.withStdErr(true)).thenReturn(logCmd);
+        when(logCmd.withTailAll()).thenReturn(logCmd);
+
+        when(logCmd.exec(any(ResultCallback.Adapter.class))).thenAnswer(invocation -> {
+            ResultCallback.Adapter<Frame> callback = invocation.getArgument(0);
+            callback.onNext(new Frame(StreamType.STDOUT, "abcdefghijklmnopqrstuvwxyz".getBytes()));
+            callback.onComplete();
+            return callback;
+        });
+
+        String logs = adapter.getContainerLogs("container1", 10);
+
+        assertThat(logs).isEqualTo("abcdefghij");
     }
 
     @Test

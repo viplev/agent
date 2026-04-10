@@ -38,3 +38,6 @@ out/
 
 ### Node ###
 node_modules/
+
+# Local helper scripts (not for git)
+src/docker-agent-run.sh

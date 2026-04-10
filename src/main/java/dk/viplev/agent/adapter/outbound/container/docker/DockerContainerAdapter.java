@@ -5,10 +5,13 @@ import com.github.dockerjava.api.async.ResultCallback;
 import com.github.dockerjava.api.command.InspectContainerResponse;
 import com.github.dockerjava.api.exception.DockerClientException;
 import com.github.dockerjava.api.exception.DockerException;
+import com.github.dockerjava.api.exception.NotModifiedException;
+import com.github.dockerjava.api.exception.NotFoundException;
 import com.github.dockerjava.api.model.Bind;
 import com.github.dockerjava.api.model.BlkioStatEntry;
 import com.github.dockerjava.api.model.Container;
 import com.github.dockerjava.api.model.Event;
+import com.github.dockerjava.api.model.Frame;
 import com.github.dockerjava.api.model.HostConfig;
 import com.github.dockerjava.api.model.Statistics;
 import com.github.dockerjava.api.model.StatisticNetworksConfig;
@@ -24,7 +27,9 @@ import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import java.io.Closeable;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -81,6 +86,10 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
                 createCmd.withCmd(request.command());
             }
 
+            if (request.entrypoint() != null && !request.entrypoint().isEmpty()) {
+                createCmd.withEntrypoint(request.entrypoint());
+            }
+
             HostConfig hostConfig = HostConfig.newHostConfig();
 
             if (request.volumes() != null && !request.volumes().isEmpty()) {
@@ -107,8 +116,28 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
     @Override
     public void stopContainer(String containerId) {
         execute("stop container " + containerId, () -> {
-            dockerClient.stopContainerCmd(containerId).exec();
-            log.debug("Stopped container {}", containerId);
+            try {
+                dockerClient.stopContainerCmd(containerId).exec();
+                log.debug("Stopped container {}", containerId);
+            } catch (NotModifiedException e) {
+                log.debug("Container {} already stopped", containerId);
+            }
+            return null;
+        });
+    }
+
+    @Override
+    public void removeContainer(String containerId) {
+        execute("remove container " + containerId, () -> {
+            try {
+                dockerClient.removeContainerCmd(containerId)
+                        .withForce(true)
+                        .withRemoveVolumes(true)
+                        .exec();
+                log.debug("Removed container {}", containerId);
+            } catch (NotFoundException e) {
+                log.debug("Container {} already removed", containerId);
+            }
             return null;
         });
     }
@@ -129,6 +158,43 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
                 return null;
             }
             return inspect.getState().getExitCodeLong();
+        });
+    }
+
+    @Override
+    public String getContainerLogs(String containerId, int maxBytes) {
+        return execute("get container logs " + containerId, () -> {
+            int boundedMaxBytes = Math.max(1, maxBytes);
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+
+            try {
+                dockerClient.logContainerCmd(containerId)
+                        .withStdOut(true)
+                        .withStdErr(true)
+                        .withTailAll()
+                        .exec(new ResultCallback.Adapter<>() {
+                            @Override
+                            public void onNext(Frame frame) {
+                                if (frame == null || frame.getPayload() == null || frame.getPayload().length == 0) {
+                                    return;
+                                }
+
+                                int remaining = boundedMaxBytes - output.size();
+                                if (remaining <= 0) {
+                                    return;
+                                }
+
+                                byte[] payload = frame.getPayload();
+                                int bytesToWrite = Math.min(payload.length, remaining);
+                                output.write(payload, 0, bytesToWrite);
+                            }
+                        }).awaitCompletion();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new ContainerRuntimeException("Interrupted while reading logs for container " + containerId, e);
+            }
+
+            return output.toString(StandardCharsets.UTF_8);
         });
     }
 
