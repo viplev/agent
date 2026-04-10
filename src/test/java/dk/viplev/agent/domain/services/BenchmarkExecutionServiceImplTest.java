@@ -334,6 +334,58 @@ class BenchmarkExecutionServiceImplTest {
         verify(viplevApiPort, never()).sendPerformanceMetrics(any(), any(), any());
     }
 
+    @Test
+    void stopRun_inFlightExecutionKeepsContextUntilStopCompletes() {
+        var queuedExecutor = new QueuedExecutorService();
+        service = new BenchmarkExecutionServiceImpl(
+                runContext,
+                viplevApiPort,
+                metricCollectorAdapter,
+                containerPort,
+                "grafana/k6:latest",
+                "viplev_agent",
+                0,
+                queuedExecutor);
+
+        service.startRun(BENCHMARK_ID, RUN_ID, "script");
+        service.stopRun(BENCHMARK_ID, RUN_ID);
+        queuedExecutor.runNext();
+
+        var statusCaptor = ArgumentCaptor.forClass(BenchmarkRunStatusUpdateDTO.class);
+        verify(viplevApiPort).updateRunStatus(any(), any(), statusCaptor.capture());
+        assertThat(statusCaptor.getValue().getStatus()).isEqualTo(BenchmarkRunStatusUpdateDTO.StatusEnum.STOPPED);
+        assertThat(runContext.isActive()).isFalse();
+    }
+
+    @Test
+    void startRun_nonZeroExit_whenVerySmallStatusReasonLimit_stillRespectsLimit() {
+        service = new BenchmarkExecutionServiceImpl(
+                runContext,
+                viplevApiPort,
+                metricCollectorAdapter,
+                containerPort,
+                new K6Service(viplevApiPort, "grafana/k6:latest", "viplev_agent"),
+                0,
+                300000,
+                5,
+                500,
+                500,
+                new DirectExecutorService());
+
+        when(metricCollectorAdapter.startCollection(BENCHMARK_ID, RUN_ID)).thenReturn(true);
+        when(containerPort.startContainer(any(ContainerStartRequest.class))).thenReturn("k6-id");
+        when(containerPort.isContainerRunning("k6-id")).thenReturn(false);
+        when(containerPort.getContainerExitCode("k6-id")).thenReturn(137L);
+        when(containerPort.getContainerLogs("k6-id", 500)).thenReturn("x".repeat(100));
+
+        service.startRun(BENCHMARK_ID, RUN_ID, "script");
+
+        var statusCaptor = ArgumentCaptor.forClass(BenchmarkRunStatusUpdateDTO.class);
+        verify(viplevApiPort, org.mockito.Mockito.times(2)).updateRunStatus(any(), any(), statusCaptor.capture());
+        var reason = statusCaptor.getAllValues().get(1).getStatusReason();
+        assertThat(reason.length()).isLessThanOrEqualTo(5);
+    }
+
     private static final class DirectExecutorService extends java.util.concurrent.AbstractExecutorService {
         private volatile boolean shutdown;
 

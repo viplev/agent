@@ -205,7 +205,9 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
             failRun(benchmarkId, runId, k6ContainerId, metricsStarted, metricsStopped, startedStatusSent, e);
         } finally {
             cleanup(k6ContainerId, metricsStarted, metricsStopped, runStopped);
-            runContext.deactivateIfMatch(benchmarkId, runId);
+            if (!runContext.isStopRequested(benchmarkId, runId)) {
+                runContext.deactivateIfMatch(benchmarkId, runId);
+            }
         }
     }
 
@@ -405,12 +407,21 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
             return null;
         }
 
-        if (reason.length() <= statusReasonMaxLength) {
+        int maxLength = Math.max(0, statusReasonMaxLength);
+        if (maxLength == 0) {
+            return "";
+        }
+
+        if (reason.length() <= maxLength) {
             return reason;
         }
 
         String suffix = "...[truncated]";
-        int available = Math.max(0, statusReasonMaxLength - suffix.length());
+        if (maxLength <= suffix.length()) {
+            return suffix.substring(0, maxLength);
+        }
+
+        int available = maxLength - suffix.length();
         return reason.substring(0, available) + suffix;
     }
 
