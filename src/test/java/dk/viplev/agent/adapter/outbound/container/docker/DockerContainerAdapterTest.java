@@ -263,7 +263,7 @@ class DockerContainerAdapterTest {
         when(dockerClient.logContainerCmd("container1")).thenReturn(logCmd);
         when(logCmd.withStdOut(true)).thenReturn(logCmd);
         when(logCmd.withStdErr(true)).thenReturn(logCmd);
-        when(logCmd.withTailAll()).thenReturn(logCmd);
+        when(logCmd.withTail(any(Integer.class))).thenReturn(logCmd);
 
         when(logCmd.exec(any(ResultCallback.Adapter.class))).thenAnswer(invocation -> {
             ResultCallback.Adapter<Frame> callback = invocation.getArgument(0);

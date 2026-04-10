@@ -62,4 +62,19 @@ class K6ServiceTest {
 
         assertThat(result.getHttpMetrics()).hasSize(1);
     }
+
+    @Test
+    void parsePerformanceMetricsFromLogs_keepsSeparatePointsForDifferentExpectedStatus() {
+        String logs = String.join("\n",
+                "{\"type\":\"Point\",\"data\":{\"time\":\"2026-01-01T10:00:00Z\",\"value\":200.0,\"metric\":\"http_req_duration\",\"tags\":{\"url\":\"https://api.example.com/users\",\"method\":\"GET\",\"status\":\"200\",\"expected_status\":\"200\"}}}",
+                "{\"type\":\"Point\",\"data\":{\"time\":\"2026-01-01T10:00:00Z\",\"value\":201.0,\"metric\":\"http_req_duration\",\"tags\":{\"url\":\"https://api.example.com/users\",\"method\":\"GET\",\"status\":\"200\",\"expected_status\":\"201\"}}}"
+        );
+
+        MetricPerformanceDTO result = service.parsePerformanceMetricsFromLogs(logs);
+
+        assertThat(result.getHttpMetrics()).hasSize(2);
+        assertThat(result.getHttpMetrics())
+                .extracting(MetricK6HttpDTO::getExpectedStatus)
+                .containsExactlyInAnyOrder(200, 201);
+    }
 }

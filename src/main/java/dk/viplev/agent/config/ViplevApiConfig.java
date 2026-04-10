@@ -60,6 +60,7 @@ public class ViplevApiConfig {
 
             SimpleModule flexibleDateModule = new SimpleModule();
             flexibleDateModule.addDeserializer(OffsetDateTime.class, new FlexibleOffsetDateTimeDeserializer());
+            flexibleDateModule.addDeserializer(LocalDateTime.class, new FlexibleLocalDateTimeDeserializer());
             objectMapper.registerModule(flexibleDateModule);
 
             jsonConverter.setObjectMapper(objectMapper);
@@ -102,6 +103,23 @@ public class ViplevApiConfig {
             } catch (Exception ignored) {
                 LocalDateTime localDateTime = LocalDateTime.parse(value, DateTimeFormatter.ISO_LOCAL_DATE_TIME);
                 return localDateTime.atOffset(ZoneOffset.UTC);
+            }
+        }
+    }
+
+    private static final class FlexibleLocalDateTimeDeserializer extends JsonDeserializer<LocalDateTime> {
+        @Override
+        public LocalDateTime deserialize(JsonParser parser, DeserializationContext context) throws IOException {
+            String value = parser.getValueAsString();
+            if (value == null || value.isBlank()) {
+                return null;
+            }
+
+            try {
+                return LocalDateTime.parse(value, DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+            } catch (Exception ignored) {
+                OffsetDateTime offsetDateTime = OffsetDateTime.parse(value, DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+                return offsetDateTime.withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime();
             }
         }
     }

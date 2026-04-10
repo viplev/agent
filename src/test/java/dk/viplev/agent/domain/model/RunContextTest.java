@@ -69,4 +69,17 @@ class RunContextTest {
         assertThat(rightDeactivate).isPresent();
         assertThat(context.isActive()).isFalse();
     }
+
+    @Test
+    void markStatusIfMatch_doesNotAllowPendingStopToStarted() {
+        RunContext context = new RunContext();
+        context.activate(BENCHMARK_ID, RUN_ID);
+        context.markStatusIfMatch(BENCHMARK_ID, RUN_ID, BenchmarkRunStatus.PENDING_STOP);
+
+        boolean updated = context.markStatusIfMatch(BENCHMARK_ID, RUN_ID, BenchmarkRunStatus.STARTED);
+
+        assertThat(updated).isFalse();
+        assertThat(context.getCurrentRun()).isPresent();
+        assertThat(context.getCurrentRun().get().status()).isEqualTo(BenchmarkRunStatus.PENDING_STOP);
+    }
 }

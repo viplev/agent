@@ -209,7 +209,7 @@ public class K6Service {
         Integer finalExpectedStatus = expectedStatus;
         String finalRequestGroup = requestGroup;
 
-        HttpPointKey key = new HttpPointKey(collectedAt, url, httpMethod, httpStatus, finalRequestGroup);
+        HttpPointKey key = new HttpPointKey(collectedAt, url, httpMethod, httpStatus, finalExpectedStatus, finalRequestGroup);
 
         return httpPoints.computeIfAbsent(key, ignored -> new HttpPointAccumulator(
                 localCollectedAt,
@@ -287,6 +287,7 @@ public class K6Service {
             String url,
             MetricK6HttpDTO.HttpMethodEnum httpMethod,
             Integer httpStatus,
+            Integer expectedStatus,
             String requestGroup) {
     }
 

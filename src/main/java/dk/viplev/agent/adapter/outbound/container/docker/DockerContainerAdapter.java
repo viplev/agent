@@ -165,13 +165,14 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
     public String getContainerLogs(String containerId, int maxBytes) {
         return execute("get container logs " + containerId, () -> {
             int boundedMaxBytes = Math.max(1, maxBytes);
+            int tailLines = Math.max(1, Math.min(1000, boundedMaxBytes / 120));
             ByteArrayOutputStream output = new ByteArrayOutputStream();
 
             try {
                 dockerClient.logContainerCmd(containerId)
                         .withStdOut(true)
                         .withStdErr(true)
-                        .withTailAll()
+                        .withTail(tailLines)
                         .exec(new ResultCallback.Adapter<>() {
                             @Override
                             public void onNext(Frame frame) {

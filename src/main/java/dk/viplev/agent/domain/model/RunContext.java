@@ -91,6 +91,9 @@ public class RunContext {
             if (isTerminal(run.status())) {
                 return false;
             }
+            if (!isAllowedTransition(run.status(), status)) {
+                return false;
+            }
             CurrentRun updated = new CurrentRun(run.benchmarkId(), run.runId(), run.k6ContainerId(), status);
             if (currentRun.compareAndSet(run, updated)) {
                 return true;
@@ -118,6 +121,19 @@ public class RunContext {
         return status == BenchmarkRunStatus.STOPPED
                 || status == BenchmarkRunStatus.FINISHED
                 || status == BenchmarkRunStatus.FAILED;
+    }
+
+    private boolean isAllowedTransition(BenchmarkRunStatus from, BenchmarkRunStatus to) {
+        return switch (from) {
+            case PENDING_START -> to == BenchmarkRunStatus.STARTED
+                    || to == BenchmarkRunStatus.PENDING_STOP
+                    || to == BenchmarkRunStatus.FAILED;
+            case STARTED -> to == BenchmarkRunStatus.PENDING_STOP
+                    || to == BenchmarkRunStatus.FINISHED
+                    || to == BenchmarkRunStatus.FAILED;
+            case PENDING_STOP -> to == BenchmarkRunStatus.STOPPED || to == BenchmarkRunStatus.FAILED;
+            case STOPPED, FINISHED, FAILED -> false;
+        };
     }
 
     public Optional<CurrentRun> deactivateIfMatch(UUID benchmarkId, UUID runId) {

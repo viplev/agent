@@ -233,6 +233,18 @@ class BenchmarkExecutionServiceImplTest {
     }
 
     @Test
+    void stopRun_whenRunAlreadyFinished_doesNotSendStoppedStatus() {
+        runContext.activate(BENCHMARK_ID, RUN_ID);
+        runContext.markStatusIfMatch(BENCHMARK_ID, RUN_ID, dk.viplev.agent.domain.model.BenchmarkRunStatus.STARTED);
+        runContext.markStatusIfMatch(BENCHMARK_ID, RUN_ID, dk.viplev.agent.domain.model.BenchmarkRunStatus.FINISHED);
+
+        service.stopRun(BENCHMARK_ID, RUN_ID);
+
+        verify(viplevApiPort, never()).updateRunStatus(any(), any(), any());
+        verify(containerPort, never()).stopContainer(any());
+    }
+
+    @Test
     void startRun_timeout_updatesFailedWithExplicitReason() {
         service = new BenchmarkExecutionServiceImpl(
                 runContext,

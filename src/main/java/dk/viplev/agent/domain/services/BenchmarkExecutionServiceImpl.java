@@ -245,9 +245,13 @@ public class BenchmarkExecutionServiceImpl implements BenchmarkExecutionUseCase 
         } finally {
             stopMetricsSilently();
             if (stopFailureReason == null) {
-                runContext.markStatusIfMatch(benchmarkId, runId, BenchmarkRunStatus.STOPPED);
-                viplevApiPort.updateRunStatus(benchmarkId, runId,
-                        statusUpdate(BenchmarkRunStatusUpdateDTO.StatusEnum.STOPPED, null));
+                if (runContext.markStatusIfMatch(benchmarkId, runId, BenchmarkRunStatus.STOPPED)) {
+                    viplevApiPort.updateRunStatus(benchmarkId, runId,
+                            statusUpdate(BenchmarkRunStatusUpdateDTO.StatusEnum.STOPPED, null));
+                } else {
+                    log.info("Skipping STOPPED update for benchmark={} run={} because state transition was rejected",
+                            benchmarkId, runId);
+                }
             } else {
                 if (runContext.markStatusIfMatch(benchmarkId, runId, BenchmarkRunStatus.FAILED)) {
                     viplevApiPort.updateRunStatus(benchmarkId, runId,
