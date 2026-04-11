@@ -101,6 +101,7 @@ class MetricCollectionServiceImplTest {
                 nodeDiscoveryPort, resourceMetricRepository, viplevApiPort, resourceMetricMapper,
                 9100, 8080,
                 "viplev-node-exporter", "viplev-cadvisor",
+                true,
                 mockExecutor);
     }
 

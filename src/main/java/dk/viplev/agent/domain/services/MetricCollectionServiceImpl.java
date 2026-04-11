@@ -32,6 +32,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -54,6 +55,7 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
     private final int cadvisorPortNumber;
     private final String localNodeExporterHost;
     private final String localCadvisorHost;
+    private final boolean clearBufferedMetricsOnStart;
     @Nullable
     private final ScheduledExecutorService executorOverride;
     private final Map<ScraperKey, ScraperHealth> scraperHealthStates = new ConcurrentHashMap<>();
@@ -62,7 +64,12 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
     private volatile UUID benchmarkId;
     private volatile UUID runId;
     private volatile ScheduledExecutorService executor;
+    @Nullable
+    private volatile ScheduledFuture<?> collectTask;
+    @Nullable
+    private volatile ScheduledFuture<?> flushTask;
     private volatile String localMachineId;
+    private volatile boolean acceptingCollection = true;
 
     enum ScraperType {
         NODE_EXPORTER("node_exporter"),
@@ -109,6 +116,7 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
                                        @Value("${agent.cadvisor-port}") int cadvisorPortNumber,
                                        @Value("${agent.node-exporter-container-name:" + ExporterConstants.NODE_EXPORTER_CONTAINER_NAME + "}") String localNodeExporterHost,
                                        @Value("${agent.cadvisor-container-name:" + ExporterConstants.CADVISOR_CONTAINER_NAME + "}") String localCadvisorHost,
+                                       @Value("${agent.clear-buffered-metrics-on-start:true}") boolean clearBufferedMetricsOnStart,
                                        @Nullable ScheduledExecutorService executorOverride) {
         this.nodeExporterPort = nodeExporterPort;
         this.cadvisorPort = cadvisorPort;
@@ -121,6 +129,7 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
         this.cadvisorPortNumber = cadvisorPortNumber;
         this.localNodeExporterHost = localNodeExporterHost;
         this.localCadvisorHost = localCadvisorHost;
+        this.clearBufferedMetricsOnStart = clearBufferedMetricsOnStart;
         this.executorOverride = executorOverride;
     }
 
@@ -132,7 +141,11 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
             return false;
         }
 
-        clearBufferedMetrics("starting new collection");
+        if (clearBufferedMetricsOnStart) {
+            clearBufferedMetrics("starting new collection");
+        } else {
+            log.info("Preserving buffered resource metrics on start because agent.clear-buffered-metrics-on-start=false");
+        }
 
         this.benchmarkId = benchmarkId;
         this.runId = runId;
@@ -147,8 +160,9 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
             });
         }
 
-        executor.scheduleAtFixedRate(this::collectMetrics, 0, 1, TimeUnit.SECONDS);
-        executor.scheduleAtFixedRate(this::flushMetrics, 5, 5, TimeUnit.SECONDS);
+        acceptingCollection = true;
+        collectTask = executor.scheduleAtFixedRate(this::collectMetrics, 0, 1, TimeUnit.SECONDS);
+        flushTask = executor.scheduleAtFixedRate(this::flushMetrics, 5, 5, TimeUnit.SECONDS);
 
         log.info("Metric collection started for benchmark={} run={}", benchmarkId, runId);
         return true;
@@ -161,15 +175,29 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
             return false;
         }
 
+        acceptingCollection = false;
+        cancelScheduledTask(collectTask);
+        cancelScheduledTask(flushTask);
+        collectTask = null;
+        flushTask = null;
+
         executor.shutdown();
+        boolean terminated = false;
         try {
-            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+            terminated = executor.awaitTermination(5, TimeUnit.SECONDS);
+            if (!terminated) {
                 executor.shutdownNow();
+                terminated = executor.awaitTermination(5, TimeUnit.SECONDS);
             }
         } catch (InterruptedException e) {
             executor.shutdownNow();
             Thread.currentThread().interrupt();
         }
+
+        if (!terminated) {
+            log.warn("Metric collection executor did not terminate cleanly before final flush/cleanup");
+        }
+
         executor = null;
 
         FlushResult flushResult = flushMetrics(false);
@@ -186,13 +214,23 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
     }
 
     void collectMetrics() {
+        if (!acceptingCollection || Thread.currentThread().isInterrupted()) {
+            return;
+        }
+
         try {
             var nodes = nodeDiscoveryPort.discoverNodes();
+            if (!acceptingCollection || Thread.currentThread().isInterrupted()) {
+                return;
+            }
             pruneScraperStates(nodes);
 
             String localId = getLocalMachineId();
 
             for (var node : nodes) {
+                if (!acceptingCollection || Thread.currentThread().isInterrupted()) {
+                    return;
+                }
                 boolean isLocalNode = node.machineId().equals(localId);
                 String nodeExporterHost = isLocalNode ? localNodeExporterHost : node.ipAddress();
                 String cadvisorHost = isLocalNode ? localCadvisorHost : node.ipAddress();
@@ -213,8 +251,10 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
                             .blockInBytes((double) hostStats.blockInBytes())
                             .blockOutBytes((double) hostStats.blockOutBytes())
                             .build();
-                    synchronized (metricsDbLock) {
-                        resourceMetricRepository.save(hostMetric);
+                    if (acceptingCollection && !Thread.currentThread().isInterrupted()) {
+                        synchronized (metricsDbLock) {
+                            resourceMetricRepository.save(hostMetric);
+                        }
                     }
                     logScraperSuccess(node.machineId(), ScraperType.NODE_EXPORTER);
                 } catch (Exception e) {
@@ -234,6 +274,9 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
                     }
 
                     for (var entry : containerStatsMap.entrySet()) {
+                        if (!acceptingCollection || Thread.currentThread().isInterrupted()) {
+                            return;
+                        }
                         var containerId = entry.getKey();
                         var stats = entry.getValue();
                         var containerName = idToName.getOrDefault(containerId, containerId);
@@ -251,8 +294,10 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
                                 .blockInBytes((double) stats.blockInBytes())
                                 .blockOutBytes((double) stats.blockOutBytes())
                                 .build();
-                        synchronized (metricsDbLock) {
-                            resourceMetricRepository.save(containerMetric);
+                        if (acceptingCollection && !Thread.currentThread().isInterrupted()) {
+                            synchronized (metricsDbLock) {
+                                resourceMetricRepository.save(containerMetric);
+                            }
                         }
                     }
                     logScraperSuccess(node.machineId(), ScraperType.CADVISOR);
@@ -270,6 +315,10 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
     }
 
     private FlushResult flushMetrics(boolean allowRetryLogging) {
+        if (!acceptingCollection && allowRetryLogging) {
+            return new FlushResult(FlushStatus.SKIPPED, 0);
+        }
+
         try {
             List<ResourceMetric> unflushed;
             synchronized (metricsDbLock) {
@@ -450,5 +499,12 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
             resourceMetricRepository.deleteAllInBatch();
             log.info("Cleared {} buffered resource metrics while {}", rowCount, reason);
         }
+    }
+
+    private void cancelScheduledTask(@Nullable ScheduledFuture<?> task) {
+        if (task == null) {
+            return;
+        }
+        task.cancel(true);
     }
 }
