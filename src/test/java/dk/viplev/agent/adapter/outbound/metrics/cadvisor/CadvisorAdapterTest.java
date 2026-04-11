@@ -24,6 +24,7 @@ import static org.mockito.Mockito.when;
 class CadvisorAdapterTest {
 
     private static final String BASE_URL = "http://viplev-cadvisor:8080";
+    private static final String CONTAINER_ID = "43fba5afb3a841531c2e2c330a510d997f139c90d1de14c7ec437403c23cd039";
 
     @Mock
     private RestTemplate restTemplate;
@@ -40,7 +41,9 @@ class CadvisorAdapterTest {
         // Two samples 1 second apart. CPU delta = 1e9 ns over 1e9 ns time → 100%
         String json = """
                 {
-                  "/docker/abc123": {
+                  "/system.slice/docker-43fba5afb3a841531c2e2c330a510d997f139c90d1de14c7ec437403c23cd039.scope": {
+                    "id": "43fba5afb3a841531c2e2c330a510d997f139c90d1de14c7ec437403c23cd039",
+                    "aliases": ["nginx", "43fba5afb3a841531c2e2c330a510d997f139c90d1de14c7ec437403c23cd039"],
                     "spec": { "memory": { "limit": 536870912 } },
                     "stats": [
                       {
@@ -83,8 +86,8 @@ class CadvisorAdapterTest {
 
         Map<String, ContainerStats> result = adapter.scrapeAllContainerStats(BASE_URL);
 
-        assertThat(result).containsKey("abc123");
-        ContainerStats stats = result.get("abc123");
+        assertThat(result).containsKey(CONTAINER_ID);
+        ContainerStats stats = result.get(CONTAINER_ID);
 
         // cpuDelta=1e9 ns, timeDelta=1000ms=1e9 ns → (1e9/1e9)*100 = 100%
         assertThat(stats.cpuPercentage()).isCloseTo(100.0, within(0.01));
@@ -103,7 +106,9 @@ class CadvisorAdapterTest {
     void scrapeAllContainerStats_cpuIsZeroWithOneSample() {
         String json = """
                 {
-                  "/docker/abc123": {
+                  "/system.slice/docker-43fba5afb3a841531c2e2c330a510d997f139c90d1de14c7ec437403c23cd039.scope": {
+                    "id": "43fba5afb3a841531c2e2c330a510d997f139c90d1de14c7ec437403c23cd039",
+                    "aliases": ["nginx", "43fba5afb3a841531c2e2c330a510d997f139c90d1de14c7ec437403c23cd039"],
                     "spec": { "memory": { "limit": 0 } },
                     "stats": [
                       {
@@ -121,14 +126,16 @@ class CadvisorAdapterTest {
 
         Map<String, ContainerStats> result = adapter.scrapeAllContainerStats(BASE_URL);
 
-        assertThat(result.get("abc123").cpuPercentage()).isZero();
+        assertThat(result.get(CONTAINER_ID).cpuPercentage()).isZero();
     }
 
     @Test
     void scrapeAllContainerStats_excludesLoopbackNetwork() {
         String json = """
                 {
-                  "/docker/abc123": {
+                  "/system.slice/docker-43fba5afb3a841531c2e2c330a510d997f139c90d1de14c7ec437403c23cd039.scope": {
+                    "id": "43fba5afb3a841531c2e2c330a510d997f139c90d1de14c7ec437403c23cd039",
+                    "aliases": ["nginx", "43fba5afb3a841531c2e2c330a510d997f139c90d1de14c7ec437403c23cd039"],
                     "spec": { "memory": { "limit": 0 } },
                     "stats": [
                       {
@@ -149,7 +156,7 @@ class CadvisorAdapterTest {
                 """;
         mockRestTemplate(json);
 
-        ContainerStats stats = adapter.scrapeAllContainerStats(BASE_URL).get("abc123");
+        ContainerStats stats = adapter.scrapeAllContainerStats(BASE_URL).get(CONTAINER_ID);
 
         assertThat(stats.networkInBytes()).isEqualTo(80_000L);
         assertThat(stats.networkOutBytes()).isEqualTo(40_000L);
@@ -159,7 +166,9 @@ class CadvisorAdapterTest {
     void scrapeAllContainerStats_excludesNonDockerContainers() {
         String json = """
                 {
-                  "/docker/abc123": {
+                  "/system.slice/docker-43fba5afb3a841531c2e2c330a510d997f139c90d1de14c7ec437403c23cd039.scope": {
+                    "id": "43fba5afb3a841531c2e2c330a510d997f139c90d1de14c7ec437403c23cd039",
+                    "aliases": ["nginx", "43fba5afb3a841531c2e2c330a510d997f139c90d1de14c7ec437403c23cd039"],
                     "spec": { "memory": { "limit": 0 } },
                     "stats": [{ "timestamp": "2024-01-01T12:00:00Z",
                                 "cpu": { "usage": { "total": 0 } },
@@ -167,7 +176,9 @@ class CadvisorAdapterTest {
                                 "network": { "interfaces": [] },
                                 "diskio": { "io_service_bytes": [] } }]
                   },
-                  "/system.slice/docker.service": {
+                  "/": {
+                    "id": "",
+                    "aliases": ["root"],
                     "spec": { "memory": { "limit": 0 } },
                     "stats": [{ "timestamp": "2024-01-01T12:00:00Z",
                                 "cpu": { "usage": { "total": 0 } },
@@ -181,14 +192,16 @@ class CadvisorAdapterTest {
 
         Map<String, ContainerStats> result = adapter.scrapeAllContainerStats(BASE_URL);
 
-        assertThat(result).containsOnlyKeys("abc123");
+        assertThat(result).containsOnlyKeys(CONTAINER_ID);
     }
 
     @Test
     void scrapeAllContainerStats_memoryLimitZeroWhenUnset() {
         String json = """
                 {
-                  "/docker/abc123": {
+                  "/system.slice/docker-43fba5afb3a841531c2e2c330a510d997f139c90d1de14c7ec437403c23cd039.scope": {
+                    "id": "43fba5afb3a841531c2e2c330a510d997f139c90d1de14c7ec437403c23cd039",
+                    "aliases": ["nginx", "43fba5afb3a841531c2e2c330a510d997f139c90d1de14c7ec437403c23cd039"],
                     "spec": { "memory": { "limit": 0 } },
                     "stats": [{ "timestamp": "2024-01-01T12:00:00Z",
                                 "cpu": { "usage": { "total": 0 } },
@@ -200,7 +213,28 @@ class CadvisorAdapterTest {
                 """;
         mockRestTemplate(json);
 
-        assertThat(adapter.scrapeAllContainerStats(BASE_URL).get("abc123").memoryLimitBytes()).isZero();
+        assertThat(adapter.scrapeAllContainerStats(BASE_URL).get(CONTAINER_ID).memoryLimitBytes()).isZero();
+    }
+
+    @Test
+    void scrapeAllContainerStats_memoryLimitZeroWhenUnlimitedSentinel() {
+        String json = """
+                {
+                  "/system.slice/docker-43fba5afb3a841531c2e2c330a510d997f139c90d1de14c7ec437403c23cd039.scope": {
+                    "id": "43fba5afb3a841531c2e2c330a510d997f139c90d1de14c7ec437403c23cd039",
+                    "aliases": ["nginx", "43fba5afb3a841531c2e2c330a510d997f139c90d1de14c7ec437403c23cd039"],
+                    "spec": { "memory": { "limit": 18446744073709551615 } },
+                    "stats": [{ "timestamp": "2024-01-01T12:00:00Z",
+                                "cpu": { "usage": { "total": 0 } },
+                                "memory": { "usage": 12345678 },
+                                "network": { "interfaces": [] },
+                                "diskio": { "io_service_bytes": [] } }]
+                  }
+                }
+                """;
+        mockRestTemplate(json);
+
+        assertThat(adapter.scrapeAllContainerStats(BASE_URL).get(CONTAINER_ID).memoryLimitBytes()).isZero();
     }
 
     // -- Helper --
@@ -223,7 +257,7 @@ class CadvisorAdapterTest {
                     mapper.getTypeFactory().constructType(type));
 
             when(restTemplate.exchange(
-                    eq(BASE_URL + "/api/v2.0/stats?type=docker&count=2"),
+                    eq(BASE_URL + "/api/v1.3/docker"),
                     eq(HttpMethod.GET),
                     isNull(),
                     any(ParameterizedTypeReference.class))

@@ -19,6 +19,7 @@ import com.github.dockerjava.api.model.ServiceModeConfig;
 import com.github.dockerjava.api.model.ServiceSpec;
 import com.github.dockerjava.api.model.TaskSpec;
 import com.github.dockerjava.api.model.Volume;
+import dk.viplev.agent.config.ExporterConstants;
 import dk.viplev.agent.domain.exception.ContainerRuntimeException;
 import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
@@ -39,21 +40,27 @@ import java.util.List;
 @Profile("docker")
 public class ExporterLifecycleManager {
 
-    static final String NETWORK_NAME = "viplev_agent";
-    static final String CADVISOR_CONTAINER_NAME = "viplev-cadvisor";
-    static final String NODE_EXPORTER_CONTAINER_NAME = "viplev-node-exporter";
+    static final String NETWORK_NAME = ExporterConstants.NETWORK_NAME;
+    static final String CADVISOR_CONTAINER_NAME = ExporterConstants.CADVISOR_CONTAINER_NAME;
+    static final String NODE_EXPORTER_CONTAINER_NAME = ExporterConstants.NODE_EXPORTER_CONTAINER_NAME;
 
     private final DockerClient dockerClient;
     private final String cadvisorImage;
     private final String nodeExporterImage;
+    private final String cadvisorContainerName;
+    private final String nodeExporterContainerName;
 
     public ExporterLifecycleManager(
             DockerClient dockerClient,
             @Value("${agent.cadvisor-image}") String cadvisorImage,
-            @Value("${agent.node-exporter-image}") String nodeExporterImage) {
+            @Value("${agent.node-exporter-image}") String nodeExporterImage,
+            @Value("${agent.cadvisor-container-name:" + CADVISOR_CONTAINER_NAME + "}") String cadvisorContainerName,
+            @Value("${agent.node-exporter-container-name:" + NODE_EXPORTER_CONTAINER_NAME + "}") String nodeExporterContainerName) {
         this.dockerClient = dockerClient;
         this.cadvisorImage = cadvisorImage;
         this.nodeExporterImage = nodeExporterImage;
+        this.cadvisorContainerName = cadvisorContainerName;
+        this.nodeExporterContainerName = nodeExporterContainerName;
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -63,17 +70,17 @@ public class ExporterLifecycleManager {
 
         if (swarm) {
             connectAgentToNetwork(networkId);
-            startSwarmServiceIfAbsent(CADVISOR_CONTAINER_NAME, cadvisorImage,
+            startSwarmServiceIfAbsent(cadvisorContainerName, cadvisorImage,
                     buildCadvisorMounts(), List.of(), networkId);
-            startSwarmServiceIfAbsent(NODE_EXPORTER_CONTAINER_NAME, nodeExporterImage,
+            startSwarmServiceIfAbsent(nodeExporterContainerName, nodeExporterImage,
                     buildNodeExporterMounts(),
                     List.of("--path.procfs=/host/proc", "--path.sysfs=/host/sys", "--path.rootfs=/rootfs"), networkId);
         } else {
             connectAgentToNetwork(networkId);
             pullImageIfAbsent(cadvisorImage);
-            startContainerIfAbsent(CADVISOR_CONTAINER_NAME, cadvisorImage, buildCadvisorHostConfig(), List.of());
+            startContainerIfAbsent(cadvisorContainerName, cadvisorImage, buildCadvisorHostConfig(), List.of());
             pullImageIfAbsent(nodeExporterImage);
-            startContainerIfAbsent(NODE_EXPORTER_CONTAINER_NAME, nodeExporterImage, buildNodeExporterHostConfig(),
+            startContainerIfAbsent(nodeExporterContainerName, nodeExporterImage, buildNodeExporterHostConfig(),
                     List.of("--path.procfs=/host/proc", "--path.sysfs=/host/sys", "--path.rootfs=/rootfs"));
         }
     }
@@ -81,11 +88,11 @@ public class ExporterLifecycleManager {
     @PreDestroy
     public void stop() {
         if (isSwarmActive()) {
-            removeSwarmService(CADVISOR_CONTAINER_NAME);
-            removeSwarmService(NODE_EXPORTER_CONTAINER_NAME);
+            removeSwarmService(cadvisorContainerName);
+            removeSwarmService(nodeExporterContainerName);
         } else {
-            removeContainer(CADVISOR_CONTAINER_NAME);
-            removeContainer(NODE_EXPORTER_CONTAINER_NAME);
+            removeContainer(cadvisorContainerName);
+            removeContainer(nodeExporterContainerName);
         }
         removeNetwork(NETWORK_NAME);
     }

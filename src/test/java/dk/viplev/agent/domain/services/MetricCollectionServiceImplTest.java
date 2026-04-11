@@ -8,6 +8,7 @@ import dk.viplev.agent.domain.model.NodeInfo;
 import dk.viplev.agent.domain.model.ResourceMetric;
 import dk.viplev.agent.domain.model.TargetType;
 import dk.viplev.agent.generated.model.MetricResourceDTO;
+import dk.viplev.agent.generated.model.MetricResourceServiceDTO;
 import dk.viplev.agent.port.outbound.container.ContainerPort;
 import dk.viplev.agent.port.outbound.db.ResourceMetricRepository;
 import dk.viplev.agent.port.outbound.discovery.NodeDiscoveryPort;
@@ -98,7 +99,10 @@ class MetricCollectionServiceImplTest {
         service = new MetricCollectionServiceImpl(
                 nodeExporterPort, cadvisorPort, containerPort,
                 nodeDiscoveryPort, resourceMetricRepository, viplevApiPort, resourceMetricMapper,
-                9100, 8080, mockExecutor);
+                9100, 8080,
+                "viplev-node-exporter", "viplev-cadvisor",
+                true,
+                mockExecutor);
     }
 
     @Test
@@ -118,8 +122,8 @@ class MetricCollectionServiceImplTest {
         // Invoke collectMetrics directly (deterministic, no timeout needed)
         scheduledRunnables.get(0).run();
 
-        verify(nodeExporterPort).scrapeHostStats("http://192.168.1.10:9100");
-        verify(cadvisorPort).scrapeAllContainerStats("http://192.168.1.10:8080");
+        verify(nodeExporterPort).scrapeHostStats("http://viplev-node-exporter:9100");
+        verify(cadvisorPort).scrapeAllContainerStats("http://viplev-cadvisor:8080");
     }
 
     @Test
@@ -129,7 +133,6 @@ class MetricCollectionServiceImplTest {
                 serviceMetric("nginx", "machine-abc")
         );
         when(resourceMetricRepository.findByFlushedFalseOrderByCollectedAtAsc()).thenReturn(unflushedMetrics);
-        when(resourceMetricRepository.saveAll(any())).thenAnswer(inv -> inv.getArgument(0));
 
         service.startCollection(BENCHMARK_ID, RUN_ID);
         service.stopCollection();
@@ -145,7 +148,6 @@ class MetricCollectionServiceImplTest {
 
         when(resourceMetricRepository.findByFlushedFalseOrderByCollectedAtAsc())
                 .thenReturn(List.of(hostMetric, serviceMetric1, serviceMetric2));
-        when(resourceMetricRepository.saveAll(any())).thenAnswer(inv -> inv.getArgument(0));
 
         service.startCollection(BENCHMARK_ID, RUN_ID);
         service.flushMetrics();
@@ -162,6 +164,7 @@ class MetricCollectionServiceImplTest {
         assertThat(nodeDTO.getServices()).hasSize(2);
         assertThat(nodeDTO.getServices().stream().map(s -> s.getServiceName()))
                 .containsExactlyInAnyOrder("nginx", "redis");
+        assertThat(nodeDTO.getServices().stream().allMatch(s -> s.getMetrics().size() == 1)).isTrue();
     }
 
     @Test
@@ -173,7 +176,6 @@ class MetricCollectionServiceImplTest {
 
         when(resourceMetricRepository.findByFlushedFalseOrderByCollectedAtAsc())
                 .thenReturn(List.of(hostMetricAbc, hostMetricXyz, serviceAbcNginx, serviceXyzPostgres));
-        when(resourceMetricRepository.saveAll(any())).thenAnswer(inv -> inv.getArgument(0));
 
         service.startCollection(BENCHMARK_ID, RUN_ID);
         service.flushMetrics();
@@ -198,12 +200,38 @@ class MetricCollectionServiceImplTest {
     }
 
     @Test
+    void flushMetrics_manyServices_eachServiceKeepsOwnDatapoints() {
+        var allMetrics = new ArrayList<ResourceMetric>();
+        allMetrics.add(hostMetric("machine-abc"));
+        for (int i = 1; i <= 7; i++) {
+            allMetrics.add(serviceMetric("service-" + i, "machine-abc"));
+        }
+
+        when(resourceMetricRepository.findByFlushedFalseOrderByCollectedAtAsc()).thenReturn(allMetrics);
+
+        service.startCollection(BENCHMARK_ID, RUN_ID);
+        service.flushMetrics();
+
+        var captor = ArgumentCaptor.forClass(MetricResourceDTO.class);
+        verify(viplevApiPort).sendResourceMetrics(any(), any(), captor.capture());
+
+        var dto = captor.getValue();
+        assertThat(dto.getHosts()).hasSize(1);
+
+        var nodeDTO = dto.getHosts().getFirst();
+        assertThat(nodeDTO.getServices()).hasSize(7);
+        assertThat(nodeDTO.getServices().stream().allMatch(s -> s.getMetrics().size() == 1)).isTrue();
+        assertThat(nodeDTO.getServices().stream().map(MetricResourceServiceDTO::getServiceName))
+                .containsExactlyInAnyOrder(
+                        "service-1", "service-2", "service-3", "service-4", "service-5", "service-6", "service-7");
+    }
+
+    @Test
     void flushMetrics_serviceMetricsWithoutHostMetrics_stillFlushes() {
         var serviceMetric = serviceMetric("nginx", "machine-abc");
 
         when(resourceMetricRepository.findByFlushedFalseOrderByCollectedAtAsc())
                 .thenReturn(List.of(serviceMetric));
-        when(resourceMetricRepository.saveAll(any())).thenAnswer(inv -> inv.getArgument(0));
 
         service.startCollection(BENCHMARK_ID, RUN_ID);
         service.flushMetrics();
@@ -233,7 +261,7 @@ class MetricCollectionServiceImplTest {
         service.flushMetrics();
 
         assertThat(metric.isFlushed()).isFalse();
-        verify(resourceMetricRepository, never()).saveAll(any());
+        verify(resourceMetricRepository, never()).deleteAllByIdInBatch(any());
     }
 
     @Test
@@ -348,7 +376,6 @@ class MetricCollectionServiceImplTest {
 
         when(resourceMetricRepository.findByFlushedFalseOrderByCollectedAtAsc())
                 .thenReturn(new ArrayList<>(List.of(nullMachineIdMetric, validMetric)));
-        when(resourceMetricRepository.saveAll(any())).thenAnswer(inv -> inv.getArgument(0));
 
         service.startCollection(BENCHMARK_ID, RUN_ID);
         service.flushMetrics();
@@ -362,6 +389,64 @@ class MetricCollectionServiceImplTest {
         var dto = captor.getValue();
         assertThat(dto.getHosts()).hasSize(1);
         assertThat(dto.getHosts().getFirst().getMachineId()).isEqualTo("machine-abc");
+    }
+
+    @Test
+    void scraperState_firstFailure_transitionsToDegraded() {
+        var transition = service.markScraperFailure("machine-abc", MetricCollectionServiceImpl.ScraperType.NODE_EXPORTER);
+
+        assertThat(transition).isEqualTo(MetricCollectionServiceImpl.ScraperTransition.DEGRADED);
+        assertThat(service.getScraperHealth("machine-abc", MetricCollectionServiceImpl.ScraperType.NODE_EXPORTER))
+                .isEqualTo(MetricCollectionServiceImpl.ScraperHealth.DEGRADED);
+    }
+
+    @Test
+    void scraperState_repeatedFailure_doesNotRetriggerTransition() {
+        service.markScraperFailure("machine-abc", MetricCollectionServiceImpl.ScraperType.CADVISOR);
+
+        var transition = service.markScraperFailure("machine-abc", MetricCollectionServiceImpl.ScraperType.CADVISOR);
+
+        assertThat(transition).isEqualTo(MetricCollectionServiceImpl.ScraperTransition.NONE);
+        assertThat(service.getScraperHealth("machine-abc", MetricCollectionServiceImpl.ScraperType.CADVISOR))
+                .isEqualTo(MetricCollectionServiceImpl.ScraperHealth.DEGRADED);
+    }
+
+    @Test
+    void scraperState_recovery_logsAsSingleTransition() {
+        service.markScraperFailure("machine-abc", MetricCollectionServiceImpl.ScraperType.NODE_EXPORTER);
+
+        var firstRecovery = service.markScraperSuccess("machine-abc", MetricCollectionServiceImpl.ScraperType.NODE_EXPORTER);
+        var secondRecovery = service.markScraperSuccess("machine-abc", MetricCollectionServiceImpl.ScraperType.NODE_EXPORTER);
+
+        assertThat(firstRecovery).isEqualTo(MetricCollectionServiceImpl.ScraperTransition.RECOVERED);
+        assertThat(secondRecovery).isEqualTo(MetricCollectionServiceImpl.ScraperTransition.NONE);
+        assertThat(service.getScraperHealth("machine-abc", MetricCollectionServiceImpl.ScraperType.NODE_EXPORTER))
+                .isEqualTo(MetricCollectionServiceImpl.ScraperHealth.HEALTHY);
+    }
+
+    @Test
+    void scraperState_failureAfterRecovery_startsNewFailurePeriod() {
+        service.markScraperFailure("machine-abc", MetricCollectionServiceImpl.ScraperType.CADVISOR);
+        service.markScraperSuccess("machine-abc", MetricCollectionServiceImpl.ScraperType.CADVISOR);
+
+        var transition = service.markScraperFailure("machine-abc", MetricCollectionServiceImpl.ScraperType.CADVISOR);
+
+        assertThat(transition).isEqualTo(MetricCollectionServiceImpl.ScraperTransition.DEGRADED);
+        assertThat(service.getScraperHealth("machine-abc", MetricCollectionServiceImpl.ScraperType.CADVISOR))
+                .isEqualTo(MetricCollectionServiceImpl.ScraperHealth.DEGRADED);
+    }
+
+    @Test
+    void pruneScraperStates_removesMissingNodes() {
+        service.markScraperFailure("machine-abc", MetricCollectionServiceImpl.ScraperType.NODE_EXPORTER);
+        service.markScraperFailure("machine-xyz", MetricCollectionServiceImpl.ScraperType.CADVISOR);
+
+        service.pruneScraperStates(List.of(TEST_NODE));
+
+        assertThat(service.getScraperHealth("machine-abc", MetricCollectionServiceImpl.ScraperType.NODE_EXPORTER))
+                .isEqualTo(MetricCollectionServiceImpl.ScraperHealth.DEGRADED);
+        assertThat(service.getScraperHealth("machine-xyz", MetricCollectionServiceImpl.ScraperType.CADVISOR))
+                .isNull();
     }
 
     // --- Helpers ---

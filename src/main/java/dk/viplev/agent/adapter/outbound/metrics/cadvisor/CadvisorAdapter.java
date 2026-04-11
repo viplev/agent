@@ -12,8 +12,12 @@ import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 
 import java.time.Duration;
+import java.math.BigInteger;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -21,8 +25,10 @@ import java.util.stream.Collectors;
 @Profile("docker")
 public class CadvisorAdapter implements CadvisorPort {
 
-    private static final String STATS_PATH = "/api/v2.0/stats?type=docker&count=2";
+    private static final String STATS_PATH = "/api/v1.3/docker";
     private static final String DOCKER_PATH_PREFIX = "/docker/";
+    private static final BigInteger UNSPECIFIED_CGROUP_MEMORY_LIMIT = BigInteger.valueOf(Long.MAX_VALUE);
+    private static final Pattern CONTAINER_ID_PATTERN = Pattern.compile("^[a-f0-9]{12,64}$");
 
     private final RestTemplate restTemplate;
 
@@ -38,11 +44,49 @@ public class CadvisorAdapter implements CadvisorPort {
         }
 
         return response.entrySet().stream()
-                .filter(e -> e.getKey().startsWith(DOCKER_PATH_PREFIX))
+                .map(e -> toResolvedEntry(e.getKey(), e.getValue()))
+                .filter(Objects::nonNull)
                 .collect(Collectors.toMap(
-                        e -> e.getKey().substring(DOCKER_PATH_PREFIX.length()),
-                        e -> toContainerStats(e.getValue())
+                        ResolvedContainerEntry::containerId,
+                        e -> toContainerStats(e.info()),
+                        (existing, ignored) -> existing,
+                        LinkedHashMap::new
                 ));
+    }
+
+    private ResolvedContainerEntry toResolvedEntry(String key, CadvisorContainerInfo info) {
+        String id = resolveContainerId(key, info);
+        if (id == null || id.isBlank()) {
+            return null;
+        }
+        return new ResolvedContainerEntry(id, info);
+    }
+
+    private String resolveContainerId(String key, CadvisorContainerInfo info) {
+        if (info != null && isContainerId(info.id())) {
+            return info.id();
+        }
+        if (info != null && info.aliases() != null) {
+            for (String alias : info.aliases()) {
+                if (isContainerId(alias)) {
+                    return alias;
+                }
+            }
+        }
+        if (key != null && key.startsWith(DOCKER_PATH_PREFIX)) {
+            String candidate = key.substring(DOCKER_PATH_PREFIX.length());
+            if (isContainerId(candidate)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private boolean isContainerId(String value) {
+        return value != null && CONTAINER_ID_PATTERN.matcher(value).matches();
+    }
+
+    private record ResolvedContainerEntry(String containerId, CadvisorContainerInfo info) {
     }
 
     private Map<String, CadvisorContainerInfo> fetchStats(String baseUrl) {
@@ -52,7 +96,7 @@ public class CadvisorAdapter implements CadvisorPort {
                     url,
                     HttpMethod.GET,
                     null,
-                    new ParameterizedTypeReference<Map<String, CadvisorContainerInfo>>() {}
+                    new ParameterizedTypeReference<LinkedHashMap<String, CadvisorContainerInfo>>() {}
             ).getBody();
         } catch (RestClientException e) {
             throw new ContainerRuntimeException(
@@ -107,7 +151,14 @@ public class CadvisorAdapter implements CadvisorPort {
         if (info.spec() == null || info.spec().memory() == null) {
             return 0L;
         }
-        return info.spec().memory().limit();
+        BigInteger limit = info.spec().memory().limit();
+        if (limit == null || limit.signum() <= 0) {
+            return 0L;
+        }
+        if (limit.compareTo(UNSPECIFIED_CGROUP_MEMORY_LIMIT) >= 0) {
+            return 0L;
+        }
+        return limit.longValue();
     }
 
     private long sumNetworkBytes(CadvisorContainerInfo.CadvisorStat stat, boolean rx) {
