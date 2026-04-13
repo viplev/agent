@@ -188,6 +188,7 @@ final class K6PerformanceStreamCoordinator implements Closeable {
                 }
             }
 
+            Thread.interrupted();
             flushAvailableBatches();
         } finally {
             senderDone.countDown();
@@ -207,18 +208,21 @@ final class K6PerformanceStreamCoordinator implements Closeable {
                 return;
             }
 
-            sendBatchWithRetry(batch, metricCount);
+            if (!sendBatchWithRetry(batch, metricCount)) {
+                accumulator.prependBatch(batch);
+                return;
+            }
         }
     }
 
-    private void sendBatchWithRetry(MetricPerformanceDTO batch, int metricCount) {
+    private boolean sendBatchWithRetry(MetricPerformanceDTO batch, int metricCount) {
         Exception lastError = null;
 
         for (int attempt = 1; attempt <= sendMaxRetries; attempt++) {
             try {
                 viplevApiPort.sendPerformanceMetrics(benchmarkId, runId, batch);
                 sentMetricPoints.addAndGet(metricCount);
-                return;
+                return true;
             } catch (Exception e) {
                 lastError = e;
                 if (attempt == sendMaxRetries) {
@@ -228,13 +232,14 @@ final class K6PerformanceStreamCoordinator implements Closeable {
                     if (running.get()) {
                         setFatal("Interrupted while backing off before retrying K6 performance metric send");
                     }
-                    return;
+                    return false;
                 }
             }
         }
 
         String reason = lastError == null ? "unknown error" : lastError.getMessage();
         setFatal("Failed to send K6 performance metrics after " + sendMaxRetries + " attempts: " + reason);
+        return false;
     }
 
     private int metricCount(MetricPerformanceDTO batch) {

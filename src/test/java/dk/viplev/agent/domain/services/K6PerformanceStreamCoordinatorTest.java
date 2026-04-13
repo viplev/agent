@@ -23,6 +23,8 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.atLeast;
+import static org.mockito.Mockito.atMost;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
@@ -142,7 +144,27 @@ class K6PerformanceStreamCoordinatorTest {
     }
 
     @Test
-    void sendBatchWithRetry_interruptDuringBackoff_stopsRetryLoop() {
+    void finishAndAwait_interruptDuringBackoff_retriesFinalFlushWithoutDroppingBatch() {
+        doThrow(new RuntimeException("viplev unavailable"))
+                .doNothing()
+                .when(viplevApiPort)
+                .sendPerformanceMetrics(eq(BENCHMARK_ID), eq(RUN_ID), any());
+
+        K6PerformanceStreamCoordinator coordinator = newCoordinator(10_000, 3, 10_000, 2_000);
+        coordinator.start();
+
+        onLine.get().accept(VUS_POINT);
+        verify(viplevApiPort, timeout(1000).times(1))
+                .sendPerformanceMetrics(eq(BENCHMARK_ID), eq(RUN_ID), any());
+
+        coordinator.finishAndAwait();
+
+        verify(viplevApiPort, timeout(1000).times(2))
+                .sendPerformanceMetrics(eq(BENCHMARK_ID), eq(RUN_ID), any());
+    }
+
+    @Test
+    void close_interruptDuringBackoff_doesNotTightLoopRetries() {
         doThrow(new RuntimeException("viplev unavailable"))
                 .when(viplevApiPort)
                 .sendPerformanceMetrics(eq(BENCHMARK_ID), eq(RUN_ID), any());
@@ -151,12 +173,14 @@ class K6PerformanceStreamCoordinatorTest {
         coordinator.start();
 
         onLine.get().accept(VUS_POINT);
-        verify(viplevApiPort, timeout(1000).times(1))
+        verify(viplevApiPort, timeout(1000).atLeast(1))
                 .sendPerformanceMetrics(eq(BENCHMARK_ID), eq(RUN_ID), any());
 
         coordinator.close();
 
-        verify(viplevApiPort, timeout(300).times(1))
+        verify(viplevApiPort, atMost(2))
+                .sendPerformanceMetrics(eq(BENCHMARK_ID), eq(RUN_ID), any());
+        verify(viplevApiPort, atLeast(1))
                 .sendPerformanceMetrics(eq(BENCHMARK_ID), eq(RUN_ID), any());
     }
 

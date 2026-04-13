@@ -32,6 +32,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -219,10 +220,12 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
                             }
 
                             String chunk = new String(frame.getPayload(), StandardCharsets.UTF_8);
+                            List<String> completedLines;
                             synchronized (lineLock) {
                                 pending.append(chunk);
-                                emitCompletedLines(containerId, pending, onLine, onError);
+                                completedLines = drainCompletedLines(pending);
                             }
+                            emitLines(containerId, completedLines, onLine, onError);
                         }
 
                         @Override
@@ -233,11 +236,15 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
 
                         @Override
                         public void onComplete() {
+                            String remainingLine = null;
                             synchronized (lineLock) {
                                 if (!pending.isEmpty()) {
-                                    emitLine(containerId, trimTrailingCarriageReturn(pending.toString()), onLine, onError);
+                                    remainingLine = trimTrailingCarriageReturn(pending.toString());
                                     pending.setLength(0);
                                 }
+                            }
+                            if (remainingLine != null) {
+                                emitLine(containerId, remainingLine, onLine, onError);
                             }
                         }
                     });
@@ -473,15 +480,23 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
         return "";
     }
 
-    private static void emitCompletedLines(String containerId,
-                                           StringBuilder pending,
-                                           Consumer<String> onLine,
-                                           Consumer<Throwable> onError) {
+    private static List<String> drainCompletedLines(StringBuilder pending) {
+        List<String> completedLines = new ArrayList<>();
         int newlineIndex;
         while ((newlineIndex = pending.indexOf("\n")) >= 0) {
             String line = pending.substring(0, newlineIndex);
-            emitLine(containerId, trimTrailingCarriageReturn(line), onLine, onError);
+            completedLines.add(trimTrailingCarriageReturn(line));
             pending.delete(0, newlineIndex + 1);
+        }
+        return completedLines;
+    }
+
+    private static void emitLines(String containerId,
+                                  List<String> lines,
+                                  Consumer<String> onLine,
+                                  Consumer<Throwable> onError) {
+        for (String line : lines) {
+            emitLine(containerId, line, onLine, onError);
         }
     }
 

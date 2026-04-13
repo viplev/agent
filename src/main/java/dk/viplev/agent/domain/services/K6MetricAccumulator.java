@@ -147,6 +147,60 @@ class K6MetricAccumulator {
         return drainBatch(Integer.MAX_VALUE);
     }
 
+    synchronized void prependBatch(MetricPerformanceDTO batch) {
+        if (batch == null) {
+            return;
+        }
+
+        List<MetricK6HttpDTO> drainedHttpMetrics = batch.getHttpMetrics();
+        if (drainedHttpMetrics != null && !drainedHttpMetrics.isEmpty()) {
+            LinkedHashMap<HttpPointKey, HttpPointAccumulator> merged = new LinkedHashMap<>();
+            int addedHttpPoints = 0;
+
+            for (MetricK6HttpDTO httpMetric : drainedHttpMetrics) {
+                if (httpMetric == null || httpMetric.getCollectedAt() == null
+                        || httpMetric.getUrl() == null || httpMetric.getHttpMethod() == null
+                        || httpMetric.getHttpStatus() == null || httpMetric.getExpectedStatus() == null) {
+                    continue;
+                }
+
+                OffsetDateTime collectedAt = httpMetric.getCollectedAt().atOffset(ZoneOffset.UTC);
+                HttpPointKey key = new HttpPointKey(
+                        collectedAt,
+                        httpMetric.getUrl(),
+                        httpMetric.getHttpMethod(),
+                        httpMetric.getHttpStatus(),
+                        httpMetric.getExpectedStatus(),
+                        httpMetric.getRequestGroup()
+                );
+
+                if (merged.putIfAbsent(key, HttpPointAccumulator.fromDto(httpMetric)) == null) {
+                    addedHttpPoints++;
+                }
+            }
+
+            for (Map.Entry<HttpPointKey, HttpPointAccumulator> existing : httpPoints.entrySet()) {
+                merged.putIfAbsent(existing.getKey(), existing.getValue());
+            }
+
+            httpPoints.clear();
+            httpPoints.putAll(merged);
+            bufferedPoints += addedHttpPoints;
+        }
+
+        List<MetricK6VusDTO> drainedVusMetrics = batch.getVusMetrics();
+        if (drainedVusMetrics != null && !drainedVusMetrics.isEmpty()) {
+            for (int i = drainedVusMetrics.size() - 1; i >= 0; i--) {
+                MetricK6VusDTO metric = drainedVusMetrics.get(i);
+                if (metric == null) {
+                    continue;
+                }
+                vusPoints.addFirst(metric);
+                bufferedPoints++;
+            }
+        }
+    }
+
     synchronized boolean hasAnySendableMetrics() {
         if (!vusPoints.isEmpty()) {
             return true;
@@ -325,6 +379,22 @@ class K6MetricAccumulator {
                     .dataSentByte(dataSentByte != null ? dataSentByte : 0)
                     .httpReqDurationMs(httpReqDurationMs)
                     .httpReqWaitingMs(httpReqWaitingMs != null ? httpReqWaitingMs : 0);
+        }
+
+        private static HttpPointAccumulator fromDto(MetricK6HttpDTO dto) {
+            HttpPointAccumulator accumulator = new HttpPointAccumulator(
+                    dto.getCollectedAt(),
+                    dto.getUrl(),
+                    dto.getHttpMethod(),
+                    dto.getRequestGroup(),
+                    dto.getHttpStatus(),
+                    dto.getExpectedStatus()
+            );
+            accumulator.dataReceivedByte = dto.getDataReceivedByte();
+            accumulator.dataSentByte = dto.getDataSentByte();
+            accumulator.httpReqDurationMs = dto.getHttpReqDurationMs();
+            accumulator.httpReqWaitingMs = dto.getHttpReqWaitingMs();
+            return accumulator;
         }
     }
 }
