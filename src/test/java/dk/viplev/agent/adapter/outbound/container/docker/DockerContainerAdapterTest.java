@@ -43,6 +43,7 @@ import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -275,6 +276,32 @@ class DockerContainerAdapterTest {
         String logs = adapter.getContainerLogs("container1", 10);
 
         assertThat(logs).isEqualTo("abcdefghij");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void followContainerLogs_streamsCompleteLinesFromFrames() throws Exception {
+        var logCmd = mock(LogContainerCmd.class);
+        when(dockerClient.logContainerCmd("container1")).thenReturn(logCmd);
+        when(logCmd.withStdOut(true)).thenReturn(logCmd);
+        when(logCmd.withStdErr(true)).thenReturn(logCmd);
+        when(logCmd.withFollowStream(true)).thenReturn(logCmd);
+
+        var lines = new CopyOnWriteArrayList<String>();
+
+        when(logCmd.exec(any(ResultCallback.Adapter.class))).thenAnswer(invocation -> {
+            ResultCallback.Adapter<Frame> callback = invocation.getArgument(0);
+            callback.onNext(new Frame(StreamType.STDOUT, "line-1\nline".getBytes()));
+            callback.onNext(new Frame(StreamType.STDOUT, "-2\npartial".getBytes()));
+            callback.onComplete();
+            return callback;
+        });
+
+        try (var ignored = adapter.followContainerLogs("container1", lines::add)) {
+            // No-op
+        }
+
+        assertThat(lines).containsExactly("line-1", "line-2", "partial");
     }
 
     @Test

@@ -22,7 +22,8 @@ import dk.viplev.agent.domain.model.ContainerInfo;
 import dk.viplev.agent.domain.model.ContainerStartRequest;
 import dk.viplev.agent.domain.model.ContainerStats;
 import dk.viplev.agent.port.outbound.container.ContainerPort;
-import lombok.extern.slf4j.Slf4j;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
@@ -38,10 +39,11 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
-@Slf4j
 @Component
 @Profile("docker")
 public class DockerContainerAdapter implements ContainerPort, Closeable {
+
+    private static final Logger log = LoggerFactory.getLogger(DockerContainerAdapter.class);
 
     private final DockerClient dockerClient;
 
@@ -196,6 +198,50 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
             }
 
             return output.toString(StandardCharsets.UTF_8);
+        });
+    }
+
+    @Override
+    public Closeable followContainerLogs(String containerId, Consumer<String> onLine) {
+        return execute("follow container logs " + containerId, () -> {
+            StringBuilder pending = new StringBuilder();
+            Object lineLock = new Object();
+
+            ResultCallback.Adapter<Frame> callback = dockerClient.logContainerCmd(containerId)
+                    .withStdOut(true)
+                    .withStdErr(true)
+                    .withFollowStream(true)
+                    .exec(new ResultCallback.Adapter<>() {
+                        @Override
+                        public void onNext(Frame frame) {
+                            if (frame == null || frame.getPayload() == null || frame.getPayload().length == 0) {
+                                return;
+                            }
+
+                            String chunk = new String(frame.getPayload(), StandardCharsets.UTF_8);
+                            synchronized (lineLock) {
+                                pending.append(chunk);
+                                emitCompletedLines(pending, onLine);
+                            }
+                        }
+
+                        @Override
+                        public void onError(Throwable throwable) {
+                            log.warn("Container log stream failed for {}", containerId, throwable);
+                        }
+
+                        @Override
+                        public void onComplete() {
+                            synchronized (lineLock) {
+                                if (!pending.isEmpty()) {
+                                    onLine.accept(trimTrailingCarriageReturn(pending.toString()));
+                                    pending.setLength(0);
+                                }
+                            }
+                        }
+                    });
+
+            return callback;
         });
     }
 
@@ -424,6 +470,22 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
             return event.getActor().getAttributes().get("name");
         }
         return "";
+    }
+
+    private static void emitCompletedLines(StringBuilder pending, Consumer<String> onLine) {
+        int newlineIndex;
+        while ((newlineIndex = pending.indexOf("\n")) >= 0) {
+            String line = pending.substring(0, newlineIndex);
+            onLine.accept(trimTrailingCarriageReturn(line));
+            pending.delete(0, newlineIndex + 1);
+        }
+    }
+
+    private static String trimTrailingCarriageReturn(String line) {
+        if (line.endsWith("\r")) {
+            return line.substring(0, line.length() - 1);
+        }
+        return line;
     }
 
     // -- Exception wrapping --

@@ -1,6 +1,7 @@
 package dk.viplev.agent.domain.services;
 
 import dk.viplev.agent.domain.exception.AgentException;
+import dk.viplev.agent.domain.model.ContainerStartRequest;
 import dk.viplev.agent.generated.model.MetricK6HttpDTO;
 import dk.viplev.agent.generated.model.MetricPerformanceDTO;
 import dk.viplev.agent.port.outbound.rest.ViplevApiPort;
@@ -14,6 +15,16 @@ class K6ServiceTest {
 
     private final ViplevApiPort viplevApiPort = mock(ViplevApiPort.class);
     private final K6Service service = new K6Service(viplevApiPort, "grafana/k6:latest", "viplev_agent");
+
+    @Test
+    void startRequest_buildsStreamingK6CommandWithSystemTags() {
+        ContainerStartRequest request = service.startRequest("export default function() {}");
+
+        assertThat(request.command().get(1)).contains("k6 run --quiet --no-summary");
+        assertThat(request.command().get(1)).contains("--system-tags=method,url,status,group");
+        assertThat(request.command().get(1)).contains("--out json=/dev/stdout");
+        assertThat(request.command().get(1)).doesNotContain("cat /tmp/viplev-k6-output.json");
+    }
 
     @Test
     void parsePerformanceMetricsFromLogs_parsesHttpAndVusMetrics() {

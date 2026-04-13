@@ -13,14 +13,18 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.io.Closeable;
 import java.util.List;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.UUID;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -42,6 +46,7 @@ class BenchmarkExecutionServiceImplTest {
 
     private static final UUID BENCHMARK_ID = UUID.fromString("11111111-1111-1111-1111-111111111111");
     private static final UUID RUN_ID = UUID.fromString("22222222-2222-2222-2222-222222222222");
+    private static final String VUS_POINT = "{\"type\":\"Point\",\"data\":{\"time\":\"2026-01-01T10:00:00Z\",\"value\":10,\"metric\":\"vus\",\"tags\":{}},\"metric\":\"vus\"}";
 
     @BeforeEach
     void setUp() {
@@ -55,6 +60,7 @@ class BenchmarkExecutionServiceImplTest {
                 "viplev_agent",
                 0,
                 new DirectExecutorService());
+        lenient().when(containerPort.followContainerLogs(any(), any())).thenReturn(noopCloseable());
     }
 
     @Test
@@ -63,7 +69,11 @@ class BenchmarkExecutionServiceImplTest {
         when(containerPort.startContainer(any(ContainerStartRequest.class))).thenReturn("k6-id");
         when(containerPort.isContainerRunning("k6-id")).thenReturn(true).thenReturn(false);
         when(containerPort.getContainerExitCode("k6-id")).thenReturn(0L);
-        when(containerPort.getContainerLogs("k6-id", 500000)).thenReturn("{\"type\":\"Point\",\"data\":{\"time\":\"2026-01-01T10:00:00Z\",\"value\":10,\"metric\":\"vus\",\"tags\":{}}}");
+        when(containerPort.followContainerLogs(eq("k6-id"), any())).thenAnswer(invocation -> {
+            Consumer<String> callback = invocation.getArgument(1);
+            callback.accept(VUS_POINT);
+            return noopCloseable();
+        });
 
         service.startRun(BENCHMARK_ID, RUN_ID, "script");
 
@@ -82,7 +92,7 @@ class BenchmarkExecutionServiceImplTest {
         var request = requestCaptor.getValue();
         assertThat(request.command().size()).isEqualTo(2);
         assertThat(request.command().get(0)).isEqualTo("-c");
-        assertThat(request.command().get(1)).contains("k6 run --quiet --out json=/tmp/viplev-k6-output.json /tmp/viplev-k6-script.js && cat /tmp/viplev-k6-output.json");
+        assertThat(request.command().get(1)).contains("k6 run --quiet --no-summary --system-tags=method,url,status,group --out json=/dev/stdout /tmp/viplev-k6-script.js");
         assertThat(request.volumes()).isEmpty();
         assertThat(request.env()).containsKey("VIPLEV_K6_SCRIPT_BASE64");
     }
@@ -256,7 +266,12 @@ class BenchmarkExecutionServiceImplTest {
                 1,
                 200,
                 200,
-                200,
+                5000,
+                2000,
+                20000,
+                3,
+                1000,
+                10000,
                 new DirectExecutorService());
 
         when(metricCollectorAdapter.startCollection(BENCHMARK_ID, RUN_ID)).thenReturn(true);
@@ -286,7 +301,12 @@ class BenchmarkExecutionServiceImplTest {
                 300000,
                 40,
                 500,
-                500,
+                5000,
+                2000,
+                20000,
+                3,
+                1000,
+                10000,
                 new DirectExecutorService());
 
         when(metricCollectorAdapter.startCollection(BENCHMARK_ID, RUN_ID)).thenReturn(true);
@@ -316,21 +336,28 @@ class BenchmarkExecutionServiceImplTest {
                 300000,
                 200,
                 200,
-                200,
+                5000,
+                2000,
+                20000,
+                3,
+                1000,
+                10000,
                 new DirectExecutorService());
 
         when(metricCollectorAdapter.startCollection(BENCHMARK_ID, RUN_ID)).thenReturn(true);
         when(containerPort.startContainer(any(ContainerStartRequest.class))).thenReturn("k6-id");
-        when(containerPort.isContainerRunning("k6-id")).thenReturn(false);
-        when(containerPort.getContainerExitCode("k6-id")).thenReturn(0L);
-        when(containerPort.getContainerLogs("k6-id", 200)).thenReturn("no json here");
+        when(containerPort.followContainerLogs(eq("k6-id"), any())).thenAnswer(invocation -> {
+            Consumer<String> callback = invocation.getArgument(1);
+            callback.accept("{\"type\":\"Point\",\"data\":{\"time\":\"not-a-time\",\"value\":10,\"metric\":\"vus\",\"tags\":{}},\"metric\":\"vus\"}");
+            return noopCloseable();
+        });
 
         service.startRun(BENCHMARK_ID, RUN_ID, "script");
 
         var statusCaptor = ArgumentCaptor.forClass(BenchmarkRunStatusUpdateDTO.class);
         verify(viplevApiPort, org.mockito.Mockito.times(2)).updateRunStatus(any(), any(), statusCaptor.capture());
         assertThat(statusCaptor.getAllValues().get(1).getStatus()).isEqualTo(BenchmarkRunStatusUpdateDTO.StatusEnum.FAILED);
-        assertThat(statusCaptor.getAllValues().get(1).getStatusReason()).contains("No K6 metrics found");
+        assertThat(statusCaptor.getAllValues().get(1).getStatusReason()).contains("Failed to parse K6 output stream");
         verify(viplevApiPort, never()).sendPerformanceMetrics(any(), any(), any());
     }
 
@@ -369,7 +396,12 @@ class BenchmarkExecutionServiceImplTest {
                 300000,
                 5,
                 500,
-                500,
+                5000,
+                2000,
+                20000,
+                3,
+                1000,
+                10000,
                 new DirectExecutorService());
 
         when(metricCollectorAdapter.startCollection(BENCHMARK_ID, RUN_ID)).thenReturn(true);
@@ -384,6 +416,11 @@ class BenchmarkExecutionServiceImplTest {
         verify(viplevApiPort, org.mockito.Mockito.times(2)).updateRunStatus(any(), any(), statusCaptor.capture());
         var reason = statusCaptor.getAllValues().get(1).getStatusReason();
         assertThat(reason.length()).isLessThanOrEqualTo(5);
+    }
+
+    private Closeable noopCloseable() {
+        return () -> {
+        };
     }
 
     private static final class DirectExecutorService extends java.util.concurrent.AbstractExecutorService {
