@@ -5,6 +5,7 @@ import dk.viplev.agent.domain.model.ContainerInfo;
 import dk.viplev.agent.domain.model.ContainerStartRequest;
 import dk.viplev.agent.domain.model.ContainerStats;
 
+import java.io.Closeable;
 import java.util.List;
 import java.util.function.Consumer;
 
@@ -25,6 +26,8 @@ public interface ContainerPort {
     Long getContainerExitCode(String containerId);
 
     String getContainerLogs(String containerId, int maxBytes);
+
+    Closeable followContainerLogs(String containerId, Consumer<String> onLine, Consumer<Throwable> onError);
 
     void watchContainerEvents(Consumer<ContainerEvent> callback);
 }
