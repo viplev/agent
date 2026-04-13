@@ -11,6 +11,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.io.Closeable;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
@@ -22,8 +23,10 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
 class K6PerformanceStreamCoordinatorTest {
@@ -119,10 +122,72 @@ class K6PerformanceStreamCoordinatorTest {
                 .hasMessageContaining("K6 log streaming failed");
     }
 
+    @Test
+    void start_whenSenderSubmissionFails_closesLogStreamAndShutsDownExecutor() throws Exception {
+        AtomicReference<Boolean> closed = new AtomicReference<>(false);
+        when(containerPort.followContainerLogs(anyString(), any(), any()))
+                .thenReturn((Closeable) () -> closed.set(true));
+
+        ExecutorService failingExecutor = mock(ExecutorService.class);
+        when(failingExecutor.submit(any(Runnable.class))).thenThrow(new RuntimeException("submit failed"));
+
+        K6PerformanceStreamCoordinator coordinator = newCoordinator(1000, 3, 1, 1000, failingExecutor);
+
+        assertThatThrownBy(coordinator::start)
+                .isInstanceOf(AgentException.class)
+                .hasMessageContaining("Failed to start K6 log streaming");
+
+        assertThat(closed.get()).isTrue();
+        verify(failingExecutor).shutdownNow();
+    }
+
+    @Test
+    void sendBatchWithRetry_interruptDuringBackoff_stopsRetryLoop() {
+        doThrow(new RuntimeException("viplev unavailable"))
+                .when(viplevApiPort)
+                .sendPerformanceMetrics(eq(BENCHMARK_ID), eq(RUN_ID), any());
+
+        K6PerformanceStreamCoordinator coordinator = newCoordinator(1000, 3, 10_000, 1000);
+        coordinator.start();
+
+        onLine.get().accept(VUS_POINT);
+        verify(viplevApiPort, timeout(1000).times(1))
+                .sendPerformanceMetrics(eq(BENCHMARK_ID), eq(RUN_ID), any());
+
+        coordinator.close();
+
+        verify(viplevApiPort, timeout(300).times(1))
+                .sendPerformanceMetrics(eq(BENCHMARK_ID), eq(RUN_ID), any());
+    }
+
     private K6PerformanceStreamCoordinator newCoordinator(long flushIntervalMs,
                                                            int sendMaxRetries,
                                                            long sendBackoffMs,
                                                            long finalFlushTimeoutMs) {
+        return newCoordinator(flushIntervalMs, sendMaxRetries, sendBackoffMs, finalFlushTimeoutMs, null);
+    }
+
+    private K6PerformanceStreamCoordinator newCoordinator(long flushIntervalMs,
+                                                           int sendMaxRetries,
+                                                           long sendBackoffMs,
+                                                           long finalFlushTimeoutMs,
+                                                           ExecutorService senderExecutor) {
+        if (senderExecutor == null) {
+            return new K6PerformanceStreamCoordinator(
+                    viplevApiPort,
+                    containerPort,
+                    BENCHMARK_ID,
+                    RUN_ID,
+                    "k6-id",
+                    flushIntervalMs,
+                    2000,
+                    20_000,
+                    sendMaxRetries,
+                    sendBackoffMs,
+                    finalFlushTimeoutMs
+            );
+        }
+
         return new K6PerformanceStreamCoordinator(
                 viplevApiPort,
                 containerPort,
@@ -134,7 +199,8 @@ class K6PerformanceStreamCoordinatorTest {
                 20_000,
                 sendMaxRetries,
                 sendBackoffMs,
-                finalFlushTimeoutMs
+                finalFlushTimeoutMs,
+                senderExecutor
         );
     }
 

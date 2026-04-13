@@ -11,6 +11,7 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -38,11 +39,7 @@ final class K6PerformanceStreamCoordinator implements Closeable {
     private final AtomicBoolean running = new AtomicBoolean(true);
     private final AtomicLong sentMetricPoints = new AtomicLong(0);
     private final CountDownLatch senderDone = new CountDownLatch(1);
-    private final java.util.concurrent.ExecutorService senderExecutor = Executors.newSingleThreadExecutor(r -> {
-        Thread thread = new Thread(r, "k6-performance-sender");
-        thread.setDaemon(true);
-        return thread;
-    });
+    private final ExecutorService senderExecutor;
 
     private volatile Closeable logStream;
 
@@ -57,6 +54,36 @@ final class K6PerformanceStreamCoordinator implements Closeable {
                                    int sendMaxRetries,
                                    long sendBackoffMs,
                                    long finalFlushTimeoutMs) {
+        this(viplevApiPort,
+                containerPort,
+                benchmarkId,
+                runId,
+                containerId,
+                flushIntervalMs,
+                maxBatchPoints,
+                maxBufferedPoints,
+                sendMaxRetries,
+                sendBackoffMs,
+                finalFlushTimeoutMs,
+                Executors.newSingleThreadExecutor(r -> {
+                    Thread thread = new Thread(r, "k6-performance-sender");
+                    thread.setDaemon(true);
+                    return thread;
+                }));
+    }
+
+    K6PerformanceStreamCoordinator(ViplevApiPort viplevApiPort,
+                                   ContainerPort containerPort,
+                                   UUID benchmarkId,
+                                   UUID runId,
+                                   String containerId,
+                                   long flushIntervalMs,
+                                   int maxBatchPoints,
+                                   int maxBufferedPoints,
+                                   int sendMaxRetries,
+                                   long sendBackoffMs,
+                                   long finalFlushTimeoutMs,
+                                   ExecutorService senderExecutor) {
         this.viplevApiPort = viplevApiPort;
         this.containerPort = containerPort;
         this.benchmarkId = benchmarkId;
@@ -68,16 +95,18 @@ final class K6PerformanceStreamCoordinator implements Closeable {
         this.sendBackoffMs = Math.max(1L, sendBackoffMs);
         this.finalFlushTimeoutMs = Math.max(1L, finalFlushTimeoutMs);
         this.accumulator = new K6MetricAccumulator(maxBufferedPoints);
+        this.senderExecutor = senderExecutor;
     }
 
     void start() {
         try {
             logStream = containerPort.followContainerLogs(containerId, this::onLogLine, this::onLogError);
+            senderExecutor.submit(this::runSenderLoop);
         } catch (Exception e) {
+            closeLogStream();
+            senderExecutor.shutdownNow();
             throw new AgentException("Failed to start K6 log streaming: " + e.getMessage(), e);
         }
-
-        senderExecutor.submit(this::runSenderLoop);
     }
 
     String getFatalError() {
@@ -195,7 +224,12 @@ final class K6PerformanceStreamCoordinator implements Closeable {
                 if (attempt == sendMaxRetries) {
                     break;
                 }
-                sleep(sendBackoffMs);
+                if (!sleep(sendBackoffMs)) {
+                    if (running.get()) {
+                        setFatal("Interrupted while backing off before retrying K6 performance metric send");
+                    }
+                    return;
+                }
             }
         }
 

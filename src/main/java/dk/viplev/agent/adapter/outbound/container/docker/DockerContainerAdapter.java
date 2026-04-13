@@ -221,25 +221,21 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
                             String chunk = new String(frame.getPayload(), StandardCharsets.UTF_8);
                             synchronized (lineLock) {
                                 pending.append(chunk);
-                                emitCompletedLines(pending, onLine);
+                                emitCompletedLines(containerId, pending, onLine, onError);
                             }
                         }
 
                         @Override
                         public void onError(Throwable throwable) {
                             log.warn("Container log stream failed for {}", containerId, throwable);
-                            try {
-                                onError.accept(throwable);
-                            } catch (Exception callbackError) {
-                                log.warn("Container log stream error callback failed for {}", containerId, callbackError);
-                            }
+                            forwardError(containerId, onError, throwable);
                         }
 
                         @Override
                         public void onComplete() {
                             synchronized (lineLock) {
                                 if (!pending.isEmpty()) {
-                                    onLine.accept(trimTrailingCarriageReturn(pending.toString()));
+                                    emitLine(containerId, trimTrailingCarriageReturn(pending.toString()), onLine, onError);
                                     pending.setLength(0);
                                 }
                             }
@@ -477,12 +473,37 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
         return "";
     }
 
-    private static void emitCompletedLines(StringBuilder pending, Consumer<String> onLine) {
+    private static void emitCompletedLines(String containerId,
+                                           StringBuilder pending,
+                                           Consumer<String> onLine,
+                                           Consumer<Throwable> onError) {
         int newlineIndex;
         while ((newlineIndex = pending.indexOf("\n")) >= 0) {
             String line = pending.substring(0, newlineIndex);
-            onLine.accept(trimTrailingCarriageReturn(line));
+            emitLine(containerId, trimTrailingCarriageReturn(line), onLine, onError);
             pending.delete(0, newlineIndex + 1);
+        }
+    }
+
+    private static void emitLine(String containerId,
+                                 String line,
+                                 Consumer<String> onLine,
+                                 Consumer<Throwable> onError) {
+        try {
+            onLine.accept(line);
+        } catch (Exception callbackError) {
+            log.warn("Container log line callback failed for {}", containerId, callbackError);
+            forwardError(containerId, onError, callbackError);
+        }
+    }
+
+    private static void forwardError(String containerId,
+                                     Consumer<Throwable> onError,
+                                     Throwable throwable) {
+        try {
+            onError.accept(throwable);
+        } catch (Exception callbackError) {
+            log.warn("Container log stream error callback failed for {}", containerId, callbackError);
         }
     }
 

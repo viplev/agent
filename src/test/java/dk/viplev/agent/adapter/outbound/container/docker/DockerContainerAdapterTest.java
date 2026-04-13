@@ -330,6 +330,62 @@ class DockerContainerAdapterTest {
     }
 
     @Test
+    @SuppressWarnings("unchecked")
+    void followContainerLogs_whenOnLineThrowsDuringOnNext_forwardsErrorToCallback() throws Exception {
+        var logCmd = mock(LogContainerCmd.class);
+        when(dockerClient.logContainerCmd("container1")).thenReturn(logCmd);
+        when(logCmd.withStdOut(true)).thenReturn(logCmd);
+        when(logCmd.withStdErr(true)).thenReturn(logCmd);
+        when(logCmd.withFollowStream(true)).thenReturn(logCmd);
+
+        var errorRef = new AtomicReference<Throwable>();
+
+        when(logCmd.exec(any(ResultCallback.Adapter.class))).thenAnswer(invocation -> {
+            ResultCallback.Adapter<Frame> callback = invocation.getArgument(0);
+            callback.onNext(new Frame(StreamType.STDOUT, "line-1\n".getBytes()));
+            callback.onComplete();
+            return callback;
+        });
+
+        try (var ignored = adapter.followContainerLogs("container1", line -> {
+            throw new IllegalStateException("line callback failed");
+        }, errorRef::set)) {
+            // No-op
+        }
+
+        assertThat(errorRef.get()).isNotNull();
+        assertThat(errorRef.get().getMessage()).isEqualTo("line callback failed");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void followContainerLogs_whenOnLineThrowsDuringOnComplete_forwardsErrorToCallback() throws Exception {
+        var logCmd = mock(LogContainerCmd.class);
+        when(dockerClient.logContainerCmd("container1")).thenReturn(logCmd);
+        when(logCmd.withStdOut(true)).thenReturn(logCmd);
+        when(logCmd.withStdErr(true)).thenReturn(logCmd);
+        when(logCmd.withFollowStream(true)).thenReturn(logCmd);
+
+        var errorRef = new AtomicReference<Throwable>();
+
+        when(logCmd.exec(any(ResultCallback.Adapter.class))).thenAnswer(invocation -> {
+            ResultCallback.Adapter<Frame> callback = invocation.getArgument(0);
+            callback.onNext(new Frame(StreamType.STDOUT, "partial-line".getBytes()));
+            callback.onComplete();
+            return callback;
+        });
+
+        try (var ignored = adapter.followContainerLogs("container1", line -> {
+            throw new IllegalStateException("onComplete flush failed");
+        }, errorRef::set)) {
+            // No-op
+        }
+
+        assertThat(errorRef.get()).isNotNull();
+        assertThat(errorRef.get().getMessage()).isEqualTo("onComplete flush failed");
+    }
+
+    @Test
     void isContainerRunning_returnsTrueWhenRunning() {
         var inspectCmd = mock(InspectContainerCmd.class);
         when(dockerClient.inspectContainerCmd("container1")).thenReturn(inspectCmd);
