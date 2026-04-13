@@ -27,7 +27,7 @@ public interface ContainerPort {
 
     String getContainerLogs(String containerId, int maxBytes);
 
-    Closeable followContainerLogs(String containerId, Consumer<String> onLine);
+    Closeable followContainerLogs(String containerId, Consumer<String> onLine, Consumer<Throwable> onError);
 
     void watchContainerEvents(Consumer<ContainerEvent> callback);
 }

@@ -202,7 +202,7 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
     }
 
     @Override
-    public Closeable followContainerLogs(String containerId, Consumer<String> onLine) {
+    public Closeable followContainerLogs(String containerId, Consumer<String> onLine, Consumer<Throwable> onError) {
         return execute("follow container logs " + containerId, () -> {
             StringBuilder pending = new StringBuilder();
             Object lineLock = new Object();
@@ -228,6 +228,11 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
                         @Override
                         public void onError(Throwable throwable) {
                             log.warn("Container log stream failed for {}", containerId, throwable);
+                            try {
+                                onError.accept(throwable);
+                            } catch (Exception callbackError) {
+                                log.warn("Container log stream error callback failed for {}", containerId, callbackError);
+                            }
                         }
 
                         @Override

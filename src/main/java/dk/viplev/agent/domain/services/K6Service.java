@@ -13,10 +13,12 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 @Service
 @Profile("docker")
@@ -25,6 +27,7 @@ public class K6Service {
     static final String SCRIPT_CONTAINER_PATH = "/tmp/viplev-k6-script.js";
     private static final String SCRIPT_ENV = "VIPLEV_K6_SCRIPT_BASE64";
     private static final String STDOUT_JSON_PATH = "/dev/stdout";
+    private static final Pattern SYSTEM_TAG_PATTERN = Pattern.compile("[a-z_]+");
 
     private final ViplevApiPort viplevApiPort;
     private final String k6Image;
@@ -39,7 +42,7 @@ public class K6Service {
         this.viplevApiPort = viplevApiPort;
         this.k6Image = k6Image;
         this.k6Network = k6Network;
-        this.k6SystemTags = k6SystemTags;
+        this.k6SystemTags = normalizeSystemTags(k6SystemTags);
     }
 
     K6Service(ViplevApiPort viplevApiPort,
@@ -103,5 +106,24 @@ public class K6Service {
             return "";
         }
         return " --system-tags=" + k6SystemTags;
+    }
+
+    private String normalizeSystemTags(String configuredSystemTags) {
+        if (configuredSystemTags == null || configuredSystemTags.isBlank()) {
+            return "";
+        }
+
+        String[] rawTags = configuredSystemTags.split(",");
+        List<String> normalizedTags = new ArrayList<>();
+
+        for (String rawTag : rawTags) {
+            String tag = rawTag == null ? "" : rawTag.trim();
+            if (tag.isBlank() || !SYSTEM_TAG_PATTERN.matcher(tag).matches()) {
+                throw new AgentException("Invalid agent.k6-system-tags value: " + configuredSystemTags);
+            }
+            normalizedTags.add(tag);
+        }
+
+        return String.join(",", normalizedTags);
     }
 }

@@ -60,7 +60,7 @@ class BenchmarkExecutionServiceImplTest {
                 "viplev_agent",
                 0,
                 new DirectExecutorService());
-        lenient().when(containerPort.followContainerLogs(any(), any())).thenReturn(noopCloseable());
+        lenient().when(containerPort.followContainerLogs(any(), any(), any())).thenReturn(noopCloseable());
     }
 
     @Test
@@ -69,7 +69,7 @@ class BenchmarkExecutionServiceImplTest {
         when(containerPort.startContainer(any(ContainerStartRequest.class))).thenReturn("k6-id");
         when(containerPort.isContainerRunning("k6-id")).thenReturn(true).thenReturn(false);
         when(containerPort.getContainerExitCode("k6-id")).thenReturn(0L);
-        when(containerPort.followContainerLogs(eq("k6-id"), any())).thenAnswer(invocation -> {
+        when(containerPort.followContainerLogs(eq("k6-id"), any(), any())).thenAnswer(invocation -> {
             Consumer<String> callback = invocation.getArgument(1);
             callback.accept(VUS_POINT);
             return noopCloseable();
@@ -346,7 +346,7 @@ class BenchmarkExecutionServiceImplTest {
 
         when(metricCollectorAdapter.startCollection(BENCHMARK_ID, RUN_ID)).thenReturn(true);
         when(containerPort.startContainer(any(ContainerStartRequest.class))).thenReturn("k6-id");
-        when(containerPort.followContainerLogs(eq("k6-id"), any())).thenAnswer(invocation -> {
+        when(containerPort.followContainerLogs(eq("k6-id"), any(), any())).thenAnswer(invocation -> {
             Consumer<String> callback = invocation.getArgument(1);
             callback.accept("{\"type\":\"Point\",\"data\":{\"time\":\"not-a-time\",\"value\":10,\"metric\":\"vus\",\"tags\":{}},\"metric\":\"vus\"}");
             return noopCloseable();

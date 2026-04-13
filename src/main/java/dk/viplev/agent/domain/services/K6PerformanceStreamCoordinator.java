@@ -72,7 +72,7 @@ final class K6PerformanceStreamCoordinator implements Closeable {
 
     void start() {
         try {
-            logStream = containerPort.followContainerLogs(containerId, this::onLogLine);
+            logStream = containerPort.followContainerLogs(containerId, this::onLogLine, this::onLogError);
         } catch (Exception e) {
             throw new AgentException("Failed to start K6 log streaming: " + e.getMessage(), e);
         }
@@ -87,6 +87,7 @@ final class K6PerformanceStreamCoordinator implements Closeable {
     void finishAndAwait() {
         running.set(false);
         closeLogStream();
+        senderExecutor.shutdownNow();
 
         try {
             if (!senderDone.await(finalFlushTimeoutMs, TimeUnit.MILLISECONDS)) {
@@ -120,6 +121,10 @@ final class K6PerformanceStreamCoordinator implements Closeable {
     }
 
     private void onLogLine(String line) {
+        if (!running.get()) {
+            return;
+        }
+
         long currentLine = lineCounter.incrementAndGet();
         try {
             accumulator.acceptLine(line, currentLine);
@@ -130,6 +135,17 @@ final class K6PerformanceStreamCoordinator implements Closeable {
         }
     }
 
+    private void onLogError(Throwable throwable) {
+        if (!running.get()) {
+            return;
+        }
+
+        String reason = throwable == null || throwable.getMessage() == null
+                ? "unknown error"
+                : throwable.getMessage();
+        setFatal("K6 log streaming failed: " + reason);
+    }
+
     private void runSenderLoop() {
         try {
             while (running.get()) {
@@ -138,7 +154,9 @@ final class K6PerformanceStreamCoordinator implements Closeable {
                 }
 
                 flushAvailableBatches();
-                sleep(flushIntervalMs);
+                if (!sleep(flushIntervalMs)) {
+                    break;
+                }
             }
 
             flushAvailableBatches();
@@ -212,11 +230,13 @@ final class K6PerformanceStreamCoordinator implements Closeable {
         }
     }
 
-    private void sleep(long millis) {
+    private boolean sleep(long millis) {
         try {
             Thread.sleep(millis);
+            return true;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            return false;
         }
     }
 }

@@ -297,11 +297,36 @@ class DockerContainerAdapterTest {
             return callback;
         });
 
-        try (var ignored = adapter.followContainerLogs("container1", lines::add)) {
+        try (var ignored = adapter.followContainerLogs("container1", lines::add, throwable -> { })) {
             // No-op
         }
 
         assertThat(lines).containsExactly("line-1", "line-2", "partial");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void followContainerLogs_forwardsErrorsToCallback() throws Exception {
+        var logCmd = mock(LogContainerCmd.class);
+        when(dockerClient.logContainerCmd("container1")).thenReturn(logCmd);
+        when(logCmd.withStdOut(true)).thenReturn(logCmd);
+        when(logCmd.withStdErr(true)).thenReturn(logCmd);
+        when(logCmd.withFollowStream(true)).thenReturn(logCmd);
+
+        var errorRef = new AtomicReference<Throwable>();
+
+        when(logCmd.exec(any(ResultCallback.Adapter.class))).thenAnswer(invocation -> {
+            ResultCallback.Adapter<Frame> callback = invocation.getArgument(0);
+            callback.onError(new RuntimeException("stream failed"));
+            return callback;
+        });
+
+        try (var ignored = adapter.followContainerLogs("container1", line -> { }, errorRef::set)) {
+            // No-op
+        }
+
+        assertThat(errorRef.get()).isNotNull();
+        assertThat(errorRef.get().getMessage()).isEqualTo("stream failed");
     }
 
     @Test

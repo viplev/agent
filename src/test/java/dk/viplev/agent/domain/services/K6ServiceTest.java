@@ -27,6 +27,28 @@ class K6ServiceTest {
     }
 
     @Test
+    void startRequest_normalizesWhitespaceInConfiguredSystemTags() {
+        K6Service spacedTagsService = new K6Service(viplevApiPort,
+                "grafana/k6:latest",
+                "viplev_agent",
+                "method, url, status");
+
+        ContainerStartRequest request = spacedTagsService.startRequest("export default function() {}");
+
+        assertThat(request.command().get(1)).contains("--system-tags=method,url,status");
+    }
+
+    @Test
+    void constructor_whenSystemTagsContainInvalidCharacters_throwsAgentException() {
+        assertThatThrownBy(() -> new K6Service(viplevApiPort,
+                "grafana/k6:latest",
+                "viplev_agent",
+                "method;rm -rf /"))
+                .isInstanceOf(AgentException.class)
+                .hasMessageContaining("agent.k6-system-tags");
+    }
+
+    @Test
     void parsePerformanceMetricsFromLogs_parsesHttpAndVusMetrics() {
         String logs = String.join("\n",
                 "{\"type\":\"Point\",\"data\":{\"time\":\"2026-01-01T10:00:00Z\",\"value\":205.1,\"metric\":\"http_req_duration\",\"tags\":{\"url\":\"https://api.example.com/users\",\"method\":\"GET\",\"status\":\"200\",\"expected_status\":\"200\",\"group\":\"users\"}}}",
