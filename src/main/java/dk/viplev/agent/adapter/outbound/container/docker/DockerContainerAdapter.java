@@ -333,9 +333,13 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
         LocalDateTime startedAt = null;
         if (inspection.getState() != null && inspection.getState().getStartedAt() != null) {
             try {
-                startedAt = LocalDateTime.parse(
+                // Docker returns RFC3339 timestamp with offset (e.g., "2026-04-19T20:00:00.123456789Z")
+                // Parse as OffsetDateTime first, then convert to LocalDateTime in UTC
+                startedAt = java.time.OffsetDateTime.parse(
                         inspection.getState().getStartedAt(),
-                        java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+                        java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+                        .atZoneSameInstant(java.time.ZoneOffset.UTC)
+                        .toLocalDateTime();
             } catch (Exception e) {
                 log.debug("Failed to parse startedAt for container {}: {}", container.getId(), e.getMessage());
             }

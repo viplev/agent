@@ -360,8 +360,19 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
                 }
             }
 
+            // Filter out SERVICE metrics with null containerId and delete them
+            boolean hasNullContainerId = unflushed.stream()
+                    .anyMatch(m -> m.getTargetType() == TargetType.SERVICE && m.getContainerId() == null);
+            if (hasNullContainerId) {
+                log.warn("Deleting legacy SERVICE metrics with null containerId — these cannot be flushed");
+                synchronized (metricsDbLock) {
+                    resourceMetricRepository.deleteByTargetTypeAndContainerIdIsNull(TargetType.SERVICE);
+                }
+            }
+
             unflushed = unflushed.stream()
                     .filter(m -> m.getMachineId() != null)
+                    .filter(m -> m.getTargetType() != TargetType.SERVICE || m.getContainerId() != null)
                     .toList();
             if (unflushed.isEmpty()) {
                 return new FlushResult(FlushStatus.SKIPPED, 0);
@@ -382,7 +393,7 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
                                     ResourceMetric::getTargetName,
                                     LinkedHashMap::new,
                                     Collectors.groupingBy(
-                                            m -> m.getContainerId() != null ? m.getContainerId() : "unknown",
+                                            ResourceMetric::getContainerId,
                                             LinkedHashMap::new,
                                             Collectors.toList()))));
 
