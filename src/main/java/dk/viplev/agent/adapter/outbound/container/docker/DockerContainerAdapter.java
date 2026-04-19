@@ -32,6 +32,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -324,12 +325,34 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
                 ? container.getNames()[0].replaceFirst("^/", "")
                 : "";
 
+        // Extract service name from Swarm label (if present)
+        Map<String, String> labels = container.getLabels() != null ? container.getLabels() : Map.of();
+        String serviceName = labels.get("com.docker.swarm.service.name");
+
+        // Extract startedAt timestamp
+        LocalDateTime startedAt = null;
+        if (inspection.getState() != null && inspection.getState().getStartedAt() != null) {
+            try {
+                // Docker returns RFC3339 timestamp with offset (e.g., "2026-04-19T20:00:00.123456789Z")
+                // Parse as OffsetDateTime first, then convert to LocalDateTime in UTC
+                startedAt = java.time.OffsetDateTime.parse(
+                        inspection.getState().getStartedAt(),
+                        java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+                        .atZoneSameInstant(java.time.ZoneOffset.UTC)
+                        .toLocalDateTime();
+            } catch (Exception e) {
+                log.debug("Failed to parse startedAt for container {}: {}", container.getId(), e.getMessage());
+            }
+        }
+
         return new ContainerInfo(
                 container.getId(),
                 name,
+                serviceName,
                 container.getImage(),
                 container.getImageId(),
                 container.getState(),
+                startedAt,
                 hostConfig != null ? hostConfig.getNanoCPUs() : null,
                 hostConfig != null ? longFromInt(hostConfig.getCpuShares()) : null,
                 hostConfig != null ? hostConfig.getMemory() : null,

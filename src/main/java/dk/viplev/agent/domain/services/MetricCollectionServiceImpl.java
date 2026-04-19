@@ -1,12 +1,14 @@
 package dk.viplev.agent.domain.services;
 
 import dk.viplev.agent.domain.mapper.ResourceMetricMapper;
+import dk.viplev.agent.domain.model.ContainerInfo;
 import dk.viplev.agent.domain.model.ResourceMetric;
 import dk.viplev.agent.domain.model.TargetType;
 import dk.viplev.agent.config.ExporterConstants;
 import dk.viplev.agent.generated.model.MetricResourceDTO;
 import dk.viplev.agent.generated.model.MetricResourceNodeDTO;
 import dk.viplev.agent.generated.model.MetricResourceServiceDTO;
+import dk.viplev.agent.generated.model.MetricResourceServiceReplicaDTO;
 import dk.viplev.agent.port.inbound.MetricCollectionUseCase;
 import dk.viplev.agent.port.outbound.container.ContainerPort;
 import dk.viplev.agent.port.outbound.db.ResourceMetricRepository;
@@ -264,13 +266,13 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
                 try {
                     var containerStatsMap = cadvisorPort.scrapeAllContainerStats(cadvisorUrl);
 
-                    Map<String, String> idToName;
+                    Map<String, ContainerInfo> idToInfo;
                     if (isLocalNode) {
                         var containers = containerPort.listContainers();
-                        idToName = containers.stream()
-                                .collect(Collectors.toMap(c -> c.id(), c -> c.name()));
+                        idToInfo = containers.stream()
+                                .collect(Collectors.toMap(c -> c.id(), c -> c));
                     } else {
-                        idToName = Map.of();
+                        idToInfo = Map.of();
                     }
 
                     for (var entry : containerStatsMap.entrySet()) {
@@ -279,13 +281,28 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
                         }
                         var containerId = entry.getKey();
                         var stats = entry.getValue();
-                        var containerName = idToName.getOrDefault(containerId, containerId);
+                        var containerInfo = idToInfo.get(containerId);
+
+                        // Determine service name: use Swarm service name if available, otherwise container name
+                        String serviceName;
+                        LocalDateTime startedAt = null;
+                        if (containerInfo != null) {
+                            serviceName = containerInfo.serviceName() != null
+                                    ? containerInfo.serviceName()  // Swarm service
+                                    : containerInfo.name();         // Standalone container
+                            startedAt = containerInfo.startedAt();
+                        } else {
+                            // Fallback for remote nodes where we don't have container info
+                            serviceName = containerId;
+                        }
 
                         var containerMetric = ResourceMetric.builder()
                                 .collectedAt(LocalDateTime.now())
                                 .targetType(TargetType.SERVICE)
-                                .targetName(containerName)
+                                .targetName(serviceName)
                                 .machineId(node.machineId())
+                                .containerId(containerId)
+                                .startedAt(startedAt)
                                 .cpuPercentage(stats.cpuPercentage())
                                 .memoryUsageBytes((double) stats.memoryUsageBytes())
                                 .memoryLimitBytes((double) stats.memoryLimitBytes())
@@ -343,8 +360,19 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
                 }
             }
 
+            // Filter out SERVICE metrics with null containerId and delete them
+            boolean hasNullContainerId = unflushed.stream()
+                    .anyMatch(m -> m.getTargetType() == TargetType.SERVICE && m.getContainerId() == null);
+            if (hasNullContainerId) {
+                log.warn("Deleting legacy SERVICE metrics with null containerId — these cannot be flushed");
+                synchronized (metricsDbLock) {
+                    resourceMetricRepository.deleteByTargetTypeAndContainerIdIsNull(TargetType.SERVICE);
+                }
+            }
+
             unflushed = unflushed.stream()
                     .filter(m -> m.getMachineId() != null)
+                    .filter(m -> m.getTargetType() != TargetType.SERVICE || m.getContainerId() != null)
                     .toList();
             if (unflushed.isEmpty()) {
                 return new FlushResult(FlushStatus.SKIPPED, 0);
@@ -355,25 +383,53 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
                     .filter(m -> m.getTargetType() == TargetType.HOST)
                     .collect(Collectors.groupingBy(ResourceMetric::getMachineId, LinkedHashMap::new, Collectors.toList()));
 
-            // Group service metrics first by machineId, then by targetName
+            // Group service metrics: machineId -> serviceName -> containerId -> metrics[]
             var serviceMetrics = unflushed.stream()
                     .filter(m -> m.getTargetType() == TargetType.SERVICE)
                     .collect(Collectors.groupingBy(
                             ResourceMetric::getMachineId,
                             LinkedHashMap::new,
-                            Collectors.groupingBy(ResourceMetric::getTargetName, LinkedHashMap::new, Collectors.toList())));
+                            Collectors.groupingBy(
+                                    ResourceMetric::getTargetName,
+                                    LinkedHashMap::new,
+                                    Collectors.groupingBy(
+                                            ResourceMetric::getContainerId,
+                                            LinkedHashMap::new,
+                                            Collectors.toList()))));
 
             List<MetricResourceNodeDTO> nodeDTOs = new ArrayList<>();
 
             // Build node DTOs from host metrics, attaching only services with the same machineId
             for (var entry : hostMetrics.entrySet()) {
                 String machineId = entry.getKey();
-                Map<String, List<ResourceMetric>> servicesForNode = serviceMetrics.getOrDefault(machineId, new LinkedHashMap<>());
+                var servicesForNode = serviceMetrics.getOrDefault(machineId, new LinkedHashMap<>());
 
                 List<MetricResourceServiceDTO> serviceDTOs = servicesForNode.entrySet().stream()
-                        .map(e -> new MetricResourceServiceDTO()
-                                .serviceName(e.getKey())
-                                .metrics(resourceMetricMapper.toDataPoints(e.getValue())))
+                        .map(serviceEntry -> {
+                            String serviceName = serviceEntry.getKey();
+                            var replicaMap = serviceEntry.getValue();
+
+                            List<MetricResourceServiceReplicaDTO> replicaDTOs = replicaMap.entrySet().stream()
+                                    .map(replicaEntry -> {
+                                        String containerId = replicaEntry.getKey();
+                                        List<ResourceMetric> replicaMetrics = replicaEntry.getValue();
+                                        LocalDateTime startedAt = replicaMetrics.stream()
+                                                .map(ResourceMetric::getStartedAt)
+                                                .filter(java.util.Objects::nonNull)
+                                                .findFirst()
+                                                .orElse(null);
+
+                                        return new MetricResourceServiceReplicaDTO()
+                                                .containerId(containerId)
+                                                .startedAt(startedAt)
+                                                .metrics(resourceMetricMapper.toDataPoints(replicaMetrics));
+                                    })
+                                    .toList();
+
+                            return new MetricResourceServiceDTO()
+                                    .serviceName(serviceName)
+                                    .replicas(replicaDTOs);
+                        })
                         .toList();
 
                 var nodeDTO = new MetricResourceNodeDTO()
@@ -389,10 +445,34 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
                 if (hostMetrics.containsKey(machineId)) {
                     continue;
                 }
-                List<MetricResourceServiceDTO> serviceDTOs = entry.getValue().entrySet().stream()
-                        .map(e -> new MetricResourceServiceDTO()
-                                .serviceName(e.getKey())
-                                .metrics(resourceMetricMapper.toDataPoints(e.getValue())))
+                var servicesForNode = entry.getValue();
+
+                List<MetricResourceServiceDTO> serviceDTOs = servicesForNode.entrySet().stream()
+                        .map(serviceEntry -> {
+                            String serviceName = serviceEntry.getKey();
+                            Map<String, List<ResourceMetric>> replicaMap = serviceEntry.getValue();
+
+                            List<MetricResourceServiceReplicaDTO> replicaDTOs = replicaMap.entrySet().stream()
+                                    .map(replicaEntry -> {
+                                        String containerId = replicaEntry.getKey();
+                                        List<ResourceMetric> replicaMetrics = replicaEntry.getValue();
+                                        LocalDateTime startedAt = replicaMetrics.stream()
+                                                .map(ResourceMetric::getStartedAt)
+                                                .filter(java.util.Objects::nonNull)
+                                                .findFirst()
+                                                .orElse(null);
+
+                                        return new MetricResourceServiceReplicaDTO()
+                                                .containerId(containerId)
+                                                .startedAt(startedAt)
+                                                .metrics(resourceMetricMapper.toDataPoints(replicaMetrics));
+                                    })
+                                    .toList();
+
+                            return new MetricResourceServiceDTO()
+                                    .serviceName(serviceName)
+                                    .replicas(replicaDTOs);
+                        })
                         .toList();
 
                 var nodeDTO = new MetricResourceNodeDTO()
