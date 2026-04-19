@@ -1189,6 +1189,26 @@ components:
             - "d4e5f6a7-b8c9-0123-def0-1234567890ab"
         serviceName:
           type: string
+        replicas:
+          type: array
+          description: Time-series data for each replica of this service
+          items:
+            $ref: '#/components/schemas/RawReplicaTimeSeriesDTO'
+
+    RawReplicaTimeSeriesDTO:
+      type: object
+      description: Time-series resource data for a single replica (container) of a service
+      properties:
+        replicaId:
+          type: string
+          format: uuid
+          examples:
+            - "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        containerId:
+          type: string
+          description: Docker container ID
+          examples:
+            - "abc123def456"
         dataPoints:
           type: array
           items:
@@ -1591,11 +1611,30 @@ components:
       type: object
       required:
         - serviceName
-        - metrics
+        - replicas
       properties:
         serviceName:
           type: string
           description: Docker service name known by the agent
+        replicas:
+          type: array
+          description: Replica-level metrics for all containers of this service (single container = 1 replica)
+          items:
+            $ref: '#/components/schemas/MetricResourceServiceReplicaDTO'
+
+    MetricResourceServiceReplicaDTO:
+      type: object
+      required:
+        - containerId
+        - metrics
+      properties:
+        containerId:
+          type: string
+          description: Docker container ID
+        startedAt:
+          type: string
+          format: date-time
+          description: When the container was started
         metrics:
           type: array
           items:

@@ -32,6 +32,12 @@ public class ResourceMetric {
     @Column(name = "machine_id", nullable = false)
     private String machineId;
 
+    @Column(name = "container_id")
+    private String containerId;
+
+    @Column(name = "started_at")
+    private LocalDateTime startedAt;
+
     @Column(name = "cpu_percentage")
     private Double cpuPercentage;
 

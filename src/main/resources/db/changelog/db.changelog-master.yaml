@@ -3,3 +3,5 @@ databaseChangeLog:
       file: db/changelog/changes/001-create-resource-metrics-table.sql
   - include:
       file: db/changelog/changes/002-add-machine-id-to-resource-metrics.sql
+  - include:
+      file: db/changelog/changes/003-add-container-id-and-started-at-to-resource-metrics.sql

@@ -7,6 +7,7 @@ import dk.viplev.agent.config.ExporterConstants;
 import dk.viplev.agent.generated.model.MetricResourceDTO;
 import dk.viplev.agent.generated.model.MetricResourceNodeDTO;
 import dk.viplev.agent.generated.model.MetricResourceServiceDTO;
+import dk.viplev.agent.generated.model.MetricResourceServiceReplicaDTO;
 import dk.viplev.agent.port.inbound.MetricCollectionUseCase;
 import dk.viplev.agent.port.outbound.container.ContainerPort;
 import dk.viplev.agent.port.outbound.db.ResourceMetricRepository;
@@ -286,6 +287,7 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
                                 .targetType(TargetType.SERVICE)
                                 .targetName(containerName)
                                 .machineId(node.machineId())
+                                .containerId(containerId)
                                 .cpuPercentage(stats.cpuPercentage())
                                 .memoryUsageBytes((double) stats.memoryUsageBytes())
                                 .memoryLimitBytes((double) stats.memoryLimitBytes())
@@ -355,25 +357,53 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
                     .filter(m -> m.getTargetType() == TargetType.HOST)
                     .collect(Collectors.groupingBy(ResourceMetric::getMachineId, LinkedHashMap::new, Collectors.toList()));
 
-            // Group service metrics first by machineId, then by targetName
+            // Group service metrics: machineId -> serviceName -> containerId -> metrics[]
             var serviceMetrics = unflushed.stream()
                     .filter(m -> m.getTargetType() == TargetType.SERVICE)
                     .collect(Collectors.groupingBy(
                             ResourceMetric::getMachineId,
                             LinkedHashMap::new,
-                            Collectors.groupingBy(ResourceMetric::getTargetName, LinkedHashMap::new, Collectors.toList())));
+                            Collectors.groupingBy(
+                                    ResourceMetric::getTargetName,
+                                    LinkedHashMap::new,
+                                    Collectors.groupingBy(
+                                            m -> m.getContainerId() != null ? m.getContainerId() : "unknown",
+                                            LinkedHashMap::new,
+                                            Collectors.toList()))));
 
             List<MetricResourceNodeDTO> nodeDTOs = new ArrayList<>();
 
             // Build node DTOs from host metrics, attaching only services with the same machineId
             for (var entry : hostMetrics.entrySet()) {
                 String machineId = entry.getKey();
-                Map<String, List<ResourceMetric>> servicesForNode = serviceMetrics.getOrDefault(machineId, new LinkedHashMap<>());
+                var servicesForNode = serviceMetrics.getOrDefault(machineId, new LinkedHashMap<>());
 
                 List<MetricResourceServiceDTO> serviceDTOs = servicesForNode.entrySet().stream()
-                        .map(e -> new MetricResourceServiceDTO()
-                                .serviceName(e.getKey())
-                                .metrics(resourceMetricMapper.toDataPoints(e.getValue())))
+                        .map(serviceEntry -> {
+                            String serviceName = serviceEntry.getKey();
+                            var replicaMap = serviceEntry.getValue();
+
+                            List<MetricResourceServiceReplicaDTO> replicaDTOs = replicaMap.entrySet().stream()
+                                    .map(replicaEntry -> {
+                                        String containerId = replicaEntry.getKey();
+                                        List<ResourceMetric> replicaMetrics = replicaEntry.getValue();
+                                        LocalDateTime startedAt = replicaMetrics.stream()
+                                                .map(ResourceMetric::getStartedAt)
+                                                .filter(java.util.Objects::nonNull)
+                                                .findFirst()
+                                                .orElse(null);
+
+                                        return new MetricResourceServiceReplicaDTO()
+                                                .containerId(containerId)
+                                                .startedAt(startedAt)
+                                                .metrics(resourceMetricMapper.toDataPoints(replicaMetrics));
+                                    })
+                                    .toList();
+
+                            return new MetricResourceServiceDTO()
+                                    .serviceName(serviceName)
+                                    .replicas(replicaDTOs);
+                        })
                         .toList();
 
                 var nodeDTO = new MetricResourceNodeDTO()
@@ -389,10 +419,34 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
                 if (hostMetrics.containsKey(machineId)) {
                     continue;
                 }
-                List<MetricResourceServiceDTO> serviceDTOs = entry.getValue().entrySet().stream()
-                        .map(e -> new MetricResourceServiceDTO()
-                                .serviceName(e.getKey())
-                                .metrics(resourceMetricMapper.toDataPoints(e.getValue())))
+                var servicesForNode = entry.getValue();
+
+                List<MetricResourceServiceDTO> serviceDTOs = servicesForNode.entrySet().stream()
+                        .map(serviceEntry -> {
+                            String serviceName = serviceEntry.getKey();
+                            Map<String, List<ResourceMetric>> replicaMap = serviceEntry.getValue();
+
+                            List<MetricResourceServiceReplicaDTO> replicaDTOs = replicaMap.entrySet().stream()
+                                    .map(replicaEntry -> {
+                                        String containerId = replicaEntry.getKey();
+                                        List<ResourceMetric> replicaMetrics = replicaEntry.getValue();
+                                        LocalDateTime startedAt = replicaMetrics.stream()
+                                                .map(ResourceMetric::getStartedAt)
+                                                .filter(java.util.Objects::nonNull)
+                                                .findFirst()
+                                                .orElse(null);
+
+                                        return new MetricResourceServiceReplicaDTO()
+                                                .containerId(containerId)
+                                                .startedAt(startedAt)
+                                                .metrics(resourceMetricMapper.toDataPoints(replicaMetrics));
+                                    })
+                                    .toList();
+
+                            return new MetricResourceServiceDTO()
+                                    .serviceName(serviceName)
+                                    .replicas(replicaDTOs);
+                        })
                         .toList();
 
                 var nodeDTO = new MetricResourceNodeDTO()

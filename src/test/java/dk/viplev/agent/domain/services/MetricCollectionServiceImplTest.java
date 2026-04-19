@@ -9,6 +9,7 @@ import dk.viplev.agent.domain.model.ResourceMetric;
 import dk.viplev.agent.domain.model.TargetType;
 import dk.viplev.agent.generated.model.MetricResourceDTO;
 import dk.viplev.agent.generated.model.MetricResourceServiceDTO;
+import dk.viplev.agent.generated.model.MetricResourceServiceReplicaDTO;
 import dk.viplev.agent.port.outbound.container.ContainerPort;
 import dk.viplev.agent.port.outbound.db.ResourceMetricRepository;
 import dk.viplev.agent.port.outbound.discovery.NodeDiscoveryPort;
@@ -164,7 +165,16 @@ class MetricCollectionServiceImplTest {
         assertThat(nodeDTO.getServices()).hasSize(2);
         assertThat(nodeDTO.getServices().stream().map(s -> s.getServiceName()))
                 .containsExactlyInAnyOrder("nginx", "redis");
-        assertThat(nodeDTO.getServices().stream().allMatch(s -> s.getMetrics().size() == 1)).isTrue();
+        
+        // Verify replica structure
+        assertThat(nodeDTO.getServices().stream().allMatch(s -> s.getReplicas().size() == 1)).isTrue();
+        assertThat(nodeDTO.getServices().stream()
+                .flatMap(s -> s.getReplicas().stream())
+                .allMatch(r -> r.getMetrics().size() == 1)).isTrue();
+        assertThat(nodeDTO.getServices().stream()
+                .flatMap(s -> s.getReplicas().stream())
+                .map(MetricResourceServiceReplicaDTO::getContainerId))
+                .containsExactlyInAnyOrder("nginx-container-id", "redis-container-id");
     }
 
     @Test
@@ -191,12 +201,18 @@ class MetricCollectionServiceImplTest {
                 .findFirst().orElseThrow();
         assertThat(nodeDTOAbc.getServices()).hasSize(1);
         assertThat(nodeDTOAbc.getServices().getFirst().getServiceName()).isEqualTo("nginx");
+        assertThat(nodeDTOAbc.getServices().getFirst().getReplicas()).hasSize(1);
+        assertThat(nodeDTOAbc.getServices().getFirst().getReplicas().getFirst().getContainerId())
+                .isEqualTo("nginx-container-id");
 
         var nodeDTOXyz = dto.getHosts().stream()
                 .filter(n -> "machine-xyz".equals(n.getMachineId()))
                 .findFirst().orElseThrow();
         assertThat(nodeDTOXyz.getServices()).hasSize(1);
         assertThat(nodeDTOXyz.getServices().getFirst().getServiceName()).isEqualTo("postgres");
+        assertThat(nodeDTOXyz.getServices().getFirst().getReplicas()).hasSize(1);
+        assertThat(nodeDTOXyz.getServices().getFirst().getReplicas().getFirst().getContainerId())
+                .isEqualTo("postgres-container-id");
     }
 
     @Test
@@ -220,7 +236,9 @@ class MetricCollectionServiceImplTest {
 
         var nodeDTO = dto.getHosts().getFirst();
         assertThat(nodeDTO.getServices()).hasSize(7);
-        assertThat(nodeDTO.getServices().stream().allMatch(s -> s.getMetrics().size() == 1)).isTrue();
+        assertThat(nodeDTO.getServices().stream()
+                .allMatch(s -> s.getReplicas().size() == 1 && s.getReplicas().getFirst().getMetrics().size() == 1))
+                .isTrue();
         assertThat(nodeDTO.getServices().stream().map(MetricResourceServiceDTO::getServiceName))
                 .containsExactlyInAnyOrder(
                         "service-1", "service-2", "service-3", "service-4", "service-5", "service-6", "service-7");
@@ -247,6 +265,9 @@ class MetricCollectionServiceImplTest {
         assertThat(nodeDTO.getMetrics()).isEmpty();
         assertThat(nodeDTO.getServices()).hasSize(1);
         assertThat(nodeDTO.getServices().getFirst().getServiceName()).isEqualTo("nginx");
+        assertThat(nodeDTO.getServices().getFirst().getReplicas()).hasSize(1);
+        assertThat(nodeDTO.getServices().getFirst().getReplicas().getFirst().getContainerId())
+                .isEqualTo("nginx-container-id");
     }
 
     @Test
@@ -468,11 +489,16 @@ class MetricCollectionServiceImplTest {
     }
 
     private ResourceMetric serviceMetric(String serviceName, String machineId) {
+        return serviceMetric(serviceName, machineId, serviceName + "-container-id");
+    }
+
+    private ResourceMetric serviceMetric(String serviceName, String machineId, String containerId) {
         return ResourceMetric.builder()
                 .collectedAt(LocalDateTime.now())
                 .targetType(TargetType.SERVICE)
                 .targetName(serviceName)
                 .machineId(machineId)
+                .containerId(containerId)
                 .cpuPercentage(10.0)
                 .memoryUsageBytes(512_000_000.0)
                 .memoryLimitBytes(1_000_000_000.0)
