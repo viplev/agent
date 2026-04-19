@@ -49,10 +49,10 @@ class ServiceDiscoveryServiceImplTest {
     @Test
     void syncServices_registersContainersWithHostInfo() {
         var containers = List.of(
-                new ContainerInfo("id1", "nginx", "nginx:latest", "sha256:aaa", "running",
-                        2_000_000_000L, 1024L, 536_870_912L, 268_435_456L),
-                new ContainerInfo("id2", "redis", "redis:7", "sha256:bbb", "running",
-                        null, null, null, null)
+                new ContainerInfo("id1", "nginx", null, "nginx:latest", "sha256:aaa", "running",
+                        null, 2_000_000_000L, 1024L, 536_870_912L, 268_435_456L),
+                new ContainerInfo("id2", "redis", null, "redis:7", "sha256:bbb", "running",
+                        null, null, null, null, null)
         );
         when(containerPort.listContainers()).thenReturn(containers);
         when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(testNode));
@@ -86,7 +86,7 @@ class ServiceDiscoveryServiceImplTest {
     void syncServices_multipleNodes_onlyLocalNodeGetsServices() {
         var node2 = new NodeInfo("daemon-id-xyz", "node2", "192.168.1.2", "Linux", "5.15.0", 4, 8_000_000_000L);
         when(containerPort.listContainers()).thenReturn(List.of(
-                new ContainerInfo("id1", "nginx", "nginx:latest", "sha256:aaa", "running", null, null, null, null)));
+                new ContainerInfo("id1", "nginx", null, "nginx:latest", "sha256:aaa", "running", null, null, null, null, null)));
         when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(testNode, node2));
         when(nodeDiscoveryPort.getLocalNodeId()).thenReturn("daemon-id-abc123");
 
@@ -105,8 +105,8 @@ class ServiceDiscoveryServiceImplTest {
 
     @Test
     void syncServices_convertsNanoCpusToCores() {
-        var container = new ContainerInfo("id1", "app", "app:1", "sha256:ccc", "running",
-                2_000_000_000L, null, null, null);
+        var container = new ContainerInfo("id1", "app", null, "app:1", "sha256:ccc", "running",
+                null, 2_000_000_000L, null, null, null);
         when(containerPort.listContainers()).thenReturn(List.of(container));
         when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(testNode));
         when(nodeDiscoveryPort.getLocalNodeId()).thenReturn("daemon-id-abc123");
@@ -121,8 +121,8 @@ class ServiceDiscoveryServiceImplTest {
 
     @Test
     void syncServices_convertsCpuSharesToCores() {
-        var container = new ContainerInfo("id1", "app", "app:1", "sha256:ccc", "running",
-                null, 1024L, null, null);
+        var container = new ContainerInfo("id1", "app", null, "app:1", "sha256:ccc", "running",
+                null, null, 1024L, null, null);
         when(containerPort.listContainers()).thenReturn(List.of(container));
         when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(testNode));
         when(nodeDiscoveryPort.getLocalNodeId()).thenReturn("daemon-id-abc123");
@@ -137,8 +137,8 @@ class ServiceDiscoveryServiceImplTest {
 
     @Test
     void syncServices_handlesNullResourceFields() {
-        var container = new ContainerInfo("id1", "app", "app:1", "sha256:ccc", "running",
-                null, null, null, null);
+        var container = new ContainerInfo("id1", "app", null, "app:1", "sha256:ccc", "running",
+                null, null, null, null, null);
         when(containerPort.listContainers()).thenReturn(List.of(container));
         when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(testNode));
         when(nodeDiscoveryPort.getLocalNodeId()).thenReturn("daemon-id-abc123");

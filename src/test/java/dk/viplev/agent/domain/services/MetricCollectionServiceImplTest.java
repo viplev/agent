@@ -296,9 +296,46 @@ class MetricCollectionServiceImplTest {
     }
 
     @Test
+    void flushMetrics_swarmServiceWithMultipleReplicas_groupsByServiceName() {
+        var hostMetric = hostMetric("machine-abc");
+        // Three replicas of the same Swarm service
+        var replica1 = serviceMetric("nginx", "machine-abc", "nginx.1.abc123");
+        var replica2 = serviceMetric("nginx", "machine-abc", "nginx.2.def456");
+        var replica3 = serviceMetric("nginx", "machine-abc", "nginx.3.ghi789");
+
+        when(resourceMetricRepository.findByFlushedFalseOrderByCollectedAtAsc())
+                .thenReturn(List.of(hostMetric, replica1, replica2, replica3));
+
+        service.startCollection(BENCHMARK_ID, RUN_ID);
+        service.flushMetrics();
+
+        var captor = ArgumentCaptor.forClass(MetricResourceDTO.class);
+        verify(viplevApiPort).sendResourceMetrics(any(), any(), captor.capture());
+
+        var dto = captor.getValue();
+        assertThat(dto.getHosts()).hasSize(1);
+
+        var nodeDTO = dto.getHosts().getFirst();
+        assertThat(nodeDTO.getServices()).hasSize(1);
+        
+        var serviceDTO = nodeDTO.getServices().getFirst();
+        assertThat(serviceDTO.getServiceName()).isEqualTo("nginx");
+        assertThat(serviceDTO.getReplicas()).hasSize(3);
+        
+        // Verify all three replicas are present with correct container IDs
+        assertThat(serviceDTO.getReplicas().stream()
+                .map(MetricResourceServiceReplicaDTO::getContainerId))
+                .containsExactlyInAnyOrder("nginx.1.abc123", "nginx.2.def456", "nginx.3.ghi789");
+        
+        // Each replica should have metrics
+        assertThat(serviceDTO.getReplicas().stream()
+                .allMatch(r -> r.getMetrics().size() == 1)).isTrue();
+    }
+
+    @Test
     void collectMetrics_persistsHostAndContainerMetrics() {
-        var container = new ContainerInfo("abc123", "nginx", "nginx:latest", "sha256:aaa",
-                "running", null, null, null, null);
+        var container = new ContainerInfo("abc123", "nginx", null, "nginx:latest", "sha256:aaa",
+                "running", null, null, null, null, null);
         when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(TEST_NODE));
         when(nodeDiscoveryPort.getLocalNodeId()).thenReturn("machine-abc");
         when(nodeExporterPort.scrapeHostStats(anyString())).thenReturn(SAMPLE_HOST_STATS);
@@ -331,6 +368,64 @@ class MetricCollectionServiceImplTest {
         assertThat(savedMetrics.stream()
                 .filter(m -> m.getTargetType() == TargetType.SERVICE)
                 .findFirst().get().getMachineId()).isEqualTo("machine-abc");
+    }
+
+    @Test
+    void collectMetrics_swarmService_usesServiceNameFromLabel() {
+        // Swarm service container with service name in label
+        var swarmContainer = new ContainerInfo("nginx.1.abc123", "nginx.1.abc123xyz", "nginx",
+                "nginx:latest", "sha256:aaa", "running", null, null, null, null, null);
+        when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(TEST_NODE));
+        when(nodeDiscoveryPort.getLocalNodeId()).thenReturn("machine-abc");
+        when(nodeExporterPort.scrapeHostStats(anyString())).thenReturn(SAMPLE_HOST_STATS);
+        when(cadvisorPort.scrapeAllContainerStats(anyString()))
+                .thenReturn(Map.of("nginx.1.abc123", SAMPLE_CONTAINER_STATS));
+        when(containerPort.listContainers()).thenReturn(List.of(swarmContainer));
+
+        var savedMetrics = new ArrayList<ResourceMetric>();
+        when(resourceMetricRepository.save(any())).thenAnswer(inv -> {
+            savedMetrics.add(inv.getArgument(0));
+            return inv.getArgument(0);
+        });
+
+        service.collectMetrics();
+
+        var serviceMetric = savedMetrics.stream()
+                .filter(m -> m.getTargetType() == TargetType.SERVICE)
+                .findFirst().orElseThrow();
+        
+        // Should use service name from label, not container name
+        assertThat(serviceMetric.getTargetName()).isEqualTo("nginx");
+        assertThat(serviceMetric.getContainerId()).isEqualTo("nginx.1.abc123");
+    }
+
+    @Test
+    void collectMetrics_standaloneContainer_usesContainerName() {
+        // Standalone container without service name label
+        var standaloneContainer = new ContainerInfo("abc123", "my-nginx-container", null,
+                "nginx:latest", "sha256:aaa", "running", null, null, null, null, null);
+        when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(TEST_NODE));
+        when(nodeDiscoveryPort.getLocalNodeId()).thenReturn("machine-abc");
+        when(nodeExporterPort.scrapeHostStats(anyString())).thenReturn(SAMPLE_HOST_STATS);
+        when(cadvisorPort.scrapeAllContainerStats(anyString()))
+                .thenReturn(Map.of("abc123", SAMPLE_CONTAINER_STATS));
+        when(containerPort.listContainers()).thenReturn(List.of(standaloneContainer));
+
+        var savedMetrics = new ArrayList<ResourceMetric>();
+        when(resourceMetricRepository.save(any())).thenAnswer(inv -> {
+            savedMetrics.add(inv.getArgument(0));
+            return inv.getArgument(0);
+        });
+
+        service.collectMetrics();
+
+        var serviceMetric = savedMetrics.stream()
+                .filter(m -> m.getTargetType() == TargetType.SERVICE)
+                .findFirst().orElseThrow();
+        
+        // Should use container name as service name
+        assertThat(serviceMetric.getTargetName()).isEqualTo("my-nginx-container");
+        assertThat(serviceMetric.getContainerId()).isEqualTo("abc123");
     }
 
     @Test

@@ -1,6 +1,7 @@
 package dk.viplev.agent.domain.services;
 
 import dk.viplev.agent.domain.mapper.ResourceMetricMapper;
+import dk.viplev.agent.domain.model.ContainerInfo;
 import dk.viplev.agent.domain.model.ResourceMetric;
 import dk.viplev.agent.domain.model.TargetType;
 import dk.viplev.agent.config.ExporterConstants;
@@ -265,13 +266,13 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
                 try {
                     var containerStatsMap = cadvisorPort.scrapeAllContainerStats(cadvisorUrl);
 
-                    Map<String, String> idToName;
+                    Map<String, ContainerInfo> idToInfo;
                     if (isLocalNode) {
                         var containers = containerPort.listContainers();
-                        idToName = containers.stream()
-                                .collect(Collectors.toMap(c -> c.id(), c -> c.name()));
+                        idToInfo = containers.stream()
+                                .collect(Collectors.toMap(c -> c.id(), c -> c));
                     } else {
-                        idToName = Map.of();
+                        idToInfo = Map.of();
                     }
 
                     for (var entry : containerStatsMap.entrySet()) {
@@ -280,14 +281,28 @@ public class MetricCollectionServiceImpl implements MetricCollectionUseCase {
                         }
                         var containerId = entry.getKey();
                         var stats = entry.getValue();
-                        var containerName = idToName.getOrDefault(containerId, containerId);
+                        var containerInfo = idToInfo.get(containerId);
+
+                        // Determine service name: use Swarm service name if available, otherwise container name
+                        String serviceName;
+                        LocalDateTime startedAt = null;
+                        if (containerInfo != null) {
+                            serviceName = containerInfo.serviceName() != null
+                                    ? containerInfo.serviceName()  // Swarm service
+                                    : containerInfo.name();         // Standalone container
+                            startedAt = containerInfo.startedAt();
+                        } else {
+                            // Fallback for remote nodes where we don't have container info
+                            serviceName = containerId;
+                        }
 
                         var containerMetric = ResourceMetric.builder()
                                 .collectedAt(LocalDateTime.now())
                                 .targetType(TargetType.SERVICE)
-                                .targetName(containerName)
+                                .targetName(serviceName)
                                 .machineId(node.machineId())
                                 .containerId(containerId)
+                                .startedAt(startedAt)
                                 .cpuPercentage(stats.cpuPercentage())
                                 .memoryUsageBytes((double) stats.memoryUsageBytes())
                                 .memoryLimitBytes((double) stats.memoryLimitBytes())
