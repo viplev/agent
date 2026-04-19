@@ -1,6 +1,6 @@
--- liquibase formatted sql
+--liquibase formatted sql
 
--- changeset viplev:003-add-container-id-and-started-at-to-resource-metrics
+--changeset viplev:003-add-container-id-and-started-at-to-resource-metrics
 ALTER TABLE resource_metrics ADD COLUMN container_id TEXT;
 ALTER TABLE resource_metrics ADD COLUMN started_at TIMESTAMP;
 
