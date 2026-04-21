@@ -191,17 +191,21 @@ These map to Spring properties `viplev.url`, `viplev.token`, `viplev.environment
 ## Docker Deployment
 
 ```bash
+# Set required credentials
+export VIPLEV_TOKEN="xyz.xyz.xyz"
+export VIPLEV_ENVIRONMENT_ID="00000000-0000-0000-0000-000000000000"
+
 docker run -d \
-  --pull always \
   --restart unless-stopped \
   --name viplev-agent \
-  -e VIPLEV_URL=https://viplev.example.com \
-  -e VIPLEV_TOKEN=<token-from-viplev> \
-  -e VIPLEV_ENVIRONMENT_ID=<environment-uuid> \
+  -e VIPLEV_URL=https://api.viplev.ringhus.dk \
+  -e VIPLEV_TOKEN="${VIPLEV_TOKEN}" \
+  -e VIPLEV_ENVIRONMENT_ID="${VIPLEV_ENVIRONMENT_ID}" \
   -e VIPLEV_CADVISOR_IMAGE=gcr.io/cadvisor/cadvisor:v0.51.0 \
   -e VIPLEV_NODE_EXPORTER_IMAGE=prom/node-exporter:v1.9.0 \
   -e VIPLEV_K6_IMAGE=grafana/k6:0.53.0 \
   -e VIPLEV_K6_TIMEOUT_MS=300000 \
+  -e AGENT_MESSAGE_POLLING_ENABLED=true \
   -v /var/run/docker.sock:/var/run/docker.sock \
   ghcr.io/viplev/agent:latest
 ```
