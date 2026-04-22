@@ -3,9 +3,9 @@ package dk.viplev.agent.domain.services;
 import dk.viplev.agent.domain.model.ContainerInfo;
 import dk.viplev.agent.domain.model.NodeInfo;
 import dk.viplev.agent.generated.model.HostDTO;
-import dk.viplev.agent.generated.model.ServiceDTO;
 import dk.viplev.agent.generated.model.ServiceRegistrationDTO;
-import dk.viplev.agent.generated.model.ServiceRegistrationHostDTO;
+import dk.viplev.agent.generated.model.ServiceRegistrationServiceDTO;
+import dk.viplev.agent.generated.model.ServiceReplicaDTO;
 import dk.viplev.agent.port.inbound.ServiceDiscoveryUseCase;
 import dk.viplev.agent.port.outbound.container.ContainerPort;
 import dk.viplev.agent.port.outbound.discovery.NodeDiscoveryPort;
@@ -14,7 +14,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class ServiceDiscoveryServiceImpl implements ServiceDiscoveryUseCase {
@@ -39,16 +42,21 @@ public class ServiceDiscoveryServiceImpl implements ServiceDiscoveryUseCase {
     @Override
     public void syncServices() {
         var containers = containerPort.listContainers();
-        var services = containers.stream().map(this::toServiceDTO).toList();
         var localNodeId = nodeDiscoveryPort.getLocalNodeId();
+        
+        // Group containers by service name and build service DTOs with replicas
+        var services = buildServiceRegistrations(containers, localNodeId);
+        
+        // Build host list (no services attached)
         var hosts = nodeDiscoveryPort.discoverNodes().stream()
-                .map(node -> new ServiceRegistrationHostDTO()
-                        .host(toHostDto(node))
-                        .services(node.machineId().equals(localNodeId) ? services : List.of()))
+                .map(this::toHostDto)
                 .toList();
 
-        viplevApiPort.registerServices(new ServiceRegistrationDTO().hosts(hosts));
-        log.info("Registered {} services on local node, {} host(s) total with VIPLEV", services.size(), hosts.size());
+        viplevApiPort.registerServices(new ServiceRegistrationDTO()
+                .services(services)
+                .hosts(hosts));
+        log.info("Registered {} service(s) with {} total replica(s) on local node, {} host(s) total with VIPLEV",
+                services.size(), containers.size(), hosts.size());
     }
 
     private HostDTO toHostDto(NodeInfo node) {
@@ -63,16 +71,52 @@ public class ServiceDiscoveryServiceImpl implements ServiceDiscoveryUseCase {
                 .ramTotalBytes(node.ramTotalBytes());
     }
 
-    private ServiceDTO toServiceDTO(ContainerInfo container) {
-        return new ServiceDTO()
-                .serviceName(container.name())
-                .imageSha(container.imageSha())
-                .imageName(container.imageName())
-                .cpuLimit(container.cpuLimit() != null && container.cpuLimit() > 0
-                        ? container.cpuLimit() / NANO_CPUS_PER_CORE : null)
-                .cpuReservation(container.cpuReservation() != null && container.cpuReservation() > 0
-                        ? container.cpuReservation() / CPU_SHARES_PER_CORE : null)
-                .memoryLimitBytes(container.memoryLimit())
-                .memoryReservationBytes(container.memoryReservation());
+    private List<ServiceRegistrationServiceDTO> buildServiceRegistrations(
+            List<ContainerInfo> containers, String localNodeId) {
+        
+        // Group containers by service name
+        Map<String, List<ContainerInfo>> serviceGroups = new HashMap<>();
+        for (ContainerInfo container : containers) {
+            String serviceName = container.serviceName() != null 
+                    ? container.serviceName() 
+                    : container.name();
+            serviceGroups.computeIfAbsent(serviceName, k -> new ArrayList<>()).add(container);
+        }
+        
+        // Build ServiceRegistrationServiceDTO for each service group
+        List<ServiceRegistrationServiceDTO> services = new ArrayList<>();
+        for (Map.Entry<String, List<ContainerInfo>> entry : serviceGroups.entrySet()) {
+            String serviceName = entry.getKey();
+            List<ContainerInfo> replicas = entry.getValue();
+            
+            // Use first container's metadata for service-level fields
+            ContainerInfo firstContainer = replicas.get(0);
+            
+            var serviceDto = new ServiceRegistrationServiceDTO()
+                    .serviceName(serviceName)
+                    .imageSha(firstContainer.imageSha())
+                    .imageName(firstContainer.imageName())
+                    .cpuLimit(firstContainer.cpuLimit() != null && firstContainer.cpuLimit() > 0
+                            ? firstContainer.cpuLimit() / NANO_CPUS_PER_CORE : null)
+                    .cpuReservation(firstContainer.cpuReservation() != null && firstContainer.cpuReservation() > 0
+                            ? firstContainer.cpuReservation() / CPU_SHARES_PER_CORE : null)
+                    .memoryLimitBytes(firstContainer.memoryLimit())
+                    .memoryReservationBytes(firstContainer.memoryReservation())
+                    .replicas(replicas.stream()
+                            .map(container -> toReplicaDto(container, localNodeId))
+                            .toList());
+            
+            services.add(serviceDto);
+        }
+        
+        return services;
+    }
+
+    private ServiceReplicaDTO toReplicaDto(ContainerInfo container, String machineId) {
+        return new ServiceReplicaDTO()
+                .containerId(container.id())
+                .containerName(container.name())
+                .machineId(machineId)
+                .startedAt(container.startedAt());
     }
 }

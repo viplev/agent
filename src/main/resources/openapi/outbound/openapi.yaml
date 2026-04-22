@@ -1493,25 +1493,74 @@ components:
     ServiceRegistrationDTO:
       type: object
       required:
+        - services
         - hosts
       properties:
-        hosts:
-          type: array
-          items:
-            $ref: '#/components/schemas/ServiceRegistrationHostDTO'
-
-    ServiceRegistrationHostDTO:
-      type: object
-      required:
-        - host
-        - services
-      properties:
-        host:
-          $ref: '#/components/schemas/HostDTO'
         services:
           type: array
           items:
-            $ref: '#/components/schemas/ServiceDTO'
+            $ref: '#/components/schemas/ServiceRegistrationServiceDTO'
+        hosts:
+          type: array
+          items:
+            $ref: '#/components/schemas/HostDTO'
+
+    ServiceRegistrationServiceDTO:
+      type: object
+      required:
+        - serviceName
+        - replicas
+      properties:
+        serviceName:
+          type: string
+          description: Logical service name (from Docker label or container name)
+        imageSha:
+          type: string
+          description: SHA hash of the container image
+        imageName:
+          type: string
+          description: Name of the container image
+        cpuLimit:
+          type: number
+          format: double
+          description: CPU limit allocated to the service
+        cpuReservation:
+          type: number
+          format: double
+          description: CPU reservation for the service
+        memoryLimitBytes:
+          type: integer
+          format: int64
+          description: Memory limit in bytes
+        memoryReservationBytes:
+          type: integer
+          format: int64
+          description: Memory reservation in bytes
+        replicas:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceReplicaDTO'
+
+    ServiceReplicaDTO:
+      type: object
+      required:
+        - containerId
+        - containerName
+        - machineId
+      properties:
+        containerId:
+          type: string
+          description: Docker container ID (SHA hash)
+        containerName:
+          type: string
+          description: Human-readable container name
+        machineId:
+          type: string
+          description: Reference to host machine
+        startedAt:
+          type: string
+          format: date-time
+          description: When the container was started
 
     ServiceDTO:
       type: object
