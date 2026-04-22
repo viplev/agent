@@ -5,8 +5,6 @@ import dk.viplev.agent.domain.exception.ViplevApiException;
 import dk.viplev.agent.domain.model.ContainerInfo;
 import dk.viplev.agent.domain.model.NodeInfo;
 import dk.viplev.agent.generated.model.ServiceRegistrationDTO;
-import dk.viplev.agent.generated.model.ServiceRegistrationServiceDTO;
-import dk.viplev.agent.generated.model.ServiceReplicaDTO;
 import dk.viplev.agent.port.outbound.container.ContainerPort;
 import dk.viplev.agent.port.outbound.discovery.NodeDiscoveryPort;
 import dk.viplev.agent.port.outbound.rest.ViplevApiPort;
@@ -79,10 +77,19 @@ class ServiceDiscoveryServiceImplTest {
         assertThat(host.getRamTotalBytes()).isEqualTo(16_000_000_000L);
         
         assertThat(registration.getServices()).hasSize(2);
-        assertThat(registration.getServices().get(0).getServiceName()).isEqualTo("nginx");
-        assertThat(registration.getServices().get(0).getImageName()).isEqualTo("nginx:latest");
-        assertThat(registration.getServices().get(0).getImageSha()).isEqualTo("sha256:aaa");
-        assertThat(registration.getServices().get(1).getServiceName()).isEqualTo("redis");
+        
+        var nginxService = registration.getServices().stream()
+                .filter(s -> s.getServiceName().equals("nginx"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(nginxService.getImageName()).isEqualTo("nginx:latest");
+        assertThat(nginxService.getImageSha()).isEqualTo("sha256:aaa");
+        
+        var redisService = registration.getServices().stream()
+                .filter(s -> s.getServiceName().equals("redis"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(redisService.getServiceName()).isEqualTo("redis");
     }
 
     @Test
@@ -122,7 +129,11 @@ class ServiceDiscoveryServiceImplTest {
         var captor = ArgumentCaptor.forClass(ServiceRegistrationDTO.class);
         verify(viplevApiPort).registerServices(captor.capture());
 
-        assertThat(captor.getValue().getServices().get(0).getCpuLimit()).isEqualTo(2.0);
+        var service = captor.getValue().getServices().stream()
+                .filter(s -> s.getServiceName().equals("app"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(service.getCpuLimit()).isEqualTo(2.0);
     }
 
     @Test
@@ -138,7 +149,11 @@ class ServiceDiscoveryServiceImplTest {
         var captor = ArgumentCaptor.forClass(ServiceRegistrationDTO.class);
         verify(viplevApiPort).registerServices(captor.capture());
 
-        assertThat(captor.getValue().getServices().get(0).getCpuReservation()).isEqualTo(1.0);
+        var service = captor.getValue().getServices().stream()
+                .filter(s -> s.getServiceName().equals("app"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(service.getCpuReservation()).isEqualTo(1.0);
     }
 
     @Test
@@ -154,11 +169,14 @@ class ServiceDiscoveryServiceImplTest {
         var captor = ArgumentCaptor.forClass(ServiceRegistrationDTO.class);
         verify(viplevApiPort).registerServices(captor.capture());
 
-        var dto = captor.getValue().getServices().get(0);
-        assertThat(dto.getCpuLimit()).isNull();
-        assertThat(dto.getCpuReservation()).isNull();
-        assertThat(dto.getMemoryLimitBytes()).isNull();
-        assertThat(dto.getMemoryReservationBytes()).isNull();
+        var service = captor.getValue().getServices().stream()
+                .filter(s -> s.getServiceName().equals("app"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(service.getCpuLimit()).isNull();
+        assertThat(service.getCpuReservation()).isNull();
+        assertThat(service.getMemoryLimitBytes()).isNull();
+        assertThat(service.getMemoryReservationBytes()).isNull();
     }
 
     @Test

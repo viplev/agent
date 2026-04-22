@@ -76,6 +76,7 @@ class DockerContainerAdapterTest {
         when(container.getImage()).thenReturn("nginx:latest");
         when(container.getImageId()).thenReturn("sha256:abc");
         when(container.getState()).thenReturn("running");
+        when(container.getLabels()).thenReturn(Map.of());
 
         var hostConfig = mock(HostConfig.class);
         when(hostConfig.getNanoCPUs()).thenReturn(1000000000L);
@@ -107,6 +108,95 @@ class DockerContainerAdapterTest {
         assertThat(info.cpuReservation()).isEqualTo(512L);
         assertThat(info.memoryLimit()).isEqualTo(536870912L);
         assertThat(info.memoryReservation()).isEqualTo(268435456L);
+    }
+
+    @Test
+    void listContainers_usesComposeLabelForServiceName() {
+        var container = mock(Container.class);
+        when(container.getId()).thenReturn("abc123");
+        when(container.getNames()).thenReturn(new String[]{"/nginx-container-1"});
+        when(container.getImage()).thenReturn("nginx:latest");
+        when(container.getImageId()).thenReturn("sha256:abc");
+        when(container.getState()).thenReturn("running");
+        when(container.getLabels()).thenReturn(Map.of(
+                "com.docker.compose.service", "nginx",
+                "com.docker.swarm.service.name", "nginx-swarm"
+        ));
+
+        var inspection = mock(InspectContainerResponse.class);
+        when(inspection.getHostConfig()).thenReturn(mock(HostConfig.class));
+
+        var listCmd = mock(ListContainersCmd.class);
+        when(dockerClient.listContainersCmd()).thenReturn(listCmd);
+        when(listCmd.exec()).thenReturn(List.of(container));
+
+        var inspectCmd = mock(InspectContainerCmd.class);
+        when(dockerClient.inspectContainerCmd("abc123")).thenReturn(inspectCmd);
+        when(inspectCmd.exec()).thenReturn(inspection);
+
+        var result = adapter.listContainers();
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).serviceName()).isEqualTo("nginx");
+    }
+
+    @Test
+    void listContainers_usesSwarmLabelWhenComposeMissing() {
+        var container = mock(Container.class);
+        when(container.getId()).thenReturn("abc123");
+        when(container.getNames()).thenReturn(new String[]{"/nginx.1.xyz"});
+        when(container.getImage()).thenReturn("nginx:latest");
+        when(container.getImageId()).thenReturn("sha256:abc");
+        when(container.getState()).thenReturn("running");
+        when(container.getLabels()).thenReturn(Map.of(
+                "com.docker.swarm.service.name", "nginx-swarm"
+        ));
+
+        var inspection = mock(InspectContainerResponse.class);
+        when(inspection.getHostConfig()).thenReturn(mock(HostConfig.class));
+
+        var listCmd = mock(ListContainersCmd.class);
+        when(dockerClient.listContainersCmd()).thenReturn(listCmd);
+        when(listCmd.exec()).thenReturn(List.of(container));
+
+        var inspectCmd = mock(InspectContainerCmd.class);
+        when(dockerClient.inspectContainerCmd("abc123")).thenReturn(inspectCmd);
+        when(inspectCmd.exec()).thenReturn(inspection);
+
+        var result = adapter.listContainers();
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).serviceName()).isEqualTo("nginx-swarm");
+    }
+
+    @Test
+    void listContainers_fallsBackToContainerNameWhenLabelsBlank() {
+        var container = mock(Container.class);
+        when(container.getId()).thenReturn("abc123");
+        when(container.getNames()).thenReturn(new String[]{"/standalone-nginx"});
+        when(container.getImage()).thenReturn("nginx:latest");
+        when(container.getImageId()).thenReturn("sha256:abc");
+        when(container.getState()).thenReturn("running");
+        when(container.getLabels()).thenReturn(Map.of(
+                "com.docker.compose.service", "",
+                "com.docker.swarm.service.name", "  "
+        ));
+
+        var inspection = mock(InspectContainerResponse.class);
+        when(inspection.getHostConfig()).thenReturn(mock(HostConfig.class));
+
+        var listCmd = mock(ListContainersCmd.class);
+        when(dockerClient.listContainersCmd()).thenReturn(listCmd);
+        when(listCmd.exec()).thenReturn(List.of(container));
+
+        var inspectCmd = mock(InspectContainerCmd.class);
+        when(dockerClient.inspectContainerCmd("abc123")).thenReturn(inspectCmd);
+        when(inspectCmd.exec()).thenReturn(inspection);
+
+        var result = adapter.listContainers();
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).serviceName()).isEqualTo("standalone-nginx");
     }
 
     @Test

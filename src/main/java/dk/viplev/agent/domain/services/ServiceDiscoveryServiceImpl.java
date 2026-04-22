@@ -15,7 +15,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -42,10 +42,10 @@ public class ServiceDiscoveryServiceImpl implements ServiceDiscoveryUseCase {
     @Override
     public void syncServices() {
         var containers = containerPort.listContainers();
-        var localNodeId = nodeDiscoveryPort.getLocalNodeId();
+        var localMachineId = nodeDiscoveryPort.getLocalNodeId();
         
         // Group containers by service name and build service DTOs with replicas
-        var services = buildServiceRegistrations(containers, localNodeId);
+        var services = buildServiceRegistrations(containers, localMachineId);
         
         // Build host list (no services attached)
         var hosts = nodeDiscoveryPort.discoverNodes().stream()
@@ -55,8 +55,12 @@ public class ServiceDiscoveryServiceImpl implements ServiceDiscoveryUseCase {
         viplevApiPort.registerServices(new ServiceRegistrationDTO()
                 .services(services)
                 .hosts(hosts));
+        
+        int totalReplicas = services.stream()
+                .mapToInt(s -> s.getReplicas().size())
+                .sum();
         log.info("Registered {} service(s) with {} total replica(s) on local node, {} host(s) total with VIPLEV",
-                services.size(), containers.size(), hosts.size());
+                services.size(), totalReplicas, hosts.size());
     }
 
     private HostDTO toHostDto(NodeInfo node) {
@@ -72,10 +76,10 @@ public class ServiceDiscoveryServiceImpl implements ServiceDiscoveryUseCase {
     }
 
     private List<ServiceRegistrationServiceDTO> buildServiceRegistrations(
-            List<ContainerInfo> containers, String localNodeId) {
+            List<ContainerInfo> containers, String localMachineId) {
         
-        // Group containers by service name
-        Map<String, List<ContainerInfo>> serviceGroups = new HashMap<>();
+        // Group containers by service name (LinkedHashMap preserves insertion order)
+        Map<String, List<ContainerInfo>> serviceGroups = new LinkedHashMap<>();
         for (ContainerInfo container : containers) {
             String serviceName = container.serviceName() != null 
                     ? container.serviceName() 
@@ -103,7 +107,7 @@ public class ServiceDiscoveryServiceImpl implements ServiceDiscoveryUseCase {
                     .memoryLimitBytes(firstContainer.memoryLimit())
                     .memoryReservationBytes(firstContainer.memoryReservation())
                     .replicas(replicas.stream()
-                            .map(container -> toReplicaDto(container, localNodeId))
+                            .map(container -> toReplicaDto(container, localMachineId))
                             .toList());
             
             services.add(serviceDto);
