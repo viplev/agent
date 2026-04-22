@@ -215,7 +215,7 @@ class ServiceDiscoveryServiceImplTest {
     }
 
     @Test
-    void syncServices_usesComposeLabel() {
+    void syncServices_usesServiceNameFromContainerInfo() {
         var container = new ContainerInfo("id1", "nginx-container-1", "nginx", "nginx:latest", "sha256:aaa", "running",
                 null, null, null, null, null);
         when(containerPort.listContainers()).thenReturn(List.of(container));
@@ -233,7 +233,7 @@ class ServiceDiscoveryServiceImplTest {
     }
 
     @Test
-    void syncServices_usesSwarmLabel() {
+    void syncServices_usesServiceNameWhenPresent() {
         var container = new ContainerInfo("id1", "nginx.1.abc123", "nginx-swarm", "nginx:latest", "sha256:aaa", "running",
                 null, null, null, null, null);
         when(containerPort.listContainers()).thenReturn(List.of(container));
@@ -251,7 +251,7 @@ class ServiceDiscoveryServiceImplTest {
     }
 
     @Test
-    void syncServices_fallsBackToContainerName() {
+    void syncServices_fallsBackToContainerNameWhenServiceNameNull() {
         var container = new ContainerInfo("id1", "standalone-nginx", null, "nginx:latest", "sha256:aaa", "running",
                 null, null, null, null, null);
         when(containerPort.listContainers()).thenReturn(List.of(container));
@@ -266,6 +266,43 @@ class ServiceDiscoveryServiceImplTest {
         var services = captor.getValue().getServices();
         assertThat(services).hasSize(1);
         assertThat(services.get(0).getServiceName()).isEqualTo("standalone-nginx");
+    }
+
+    @Test
+    void syncServices_fallsBackToContainerIdWhenServiceNameAndNameBlank() {
+        var container = new ContainerInfo("id1", "", "  ", "nginx:latest", "sha256:aaa", "running",
+                null, null, null, null, null);
+        when(containerPort.listContainers()).thenReturn(List.of(container));
+        when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(testNode));
+        when(nodeDiscoveryPort.getLocalNodeId()).thenReturn("daemon-id-abc123");
+
+        service.syncServices();
+
+        var captor = ArgumentCaptor.forClass(ServiceRegistrationDTO.class);
+        verify(viplevApiPort).registerServices(captor.capture());
+
+        var services = captor.getValue().getServices();
+        assertThat(services).hasSize(1);
+        assertThat(services.get(0).getServiceName()).isEqualTo("id1");
+    }
+
+    @Test
+    void syncServices_usesContainerIdForReplicaNameWhenNameBlank() {
+        var container = new ContainerInfo("id1", "", "nginx", "nginx:latest", "sha256:aaa", "running",
+                null, null, null, null, null);
+        when(containerPort.listContainers()).thenReturn(List.of(container));
+        when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(testNode));
+        when(nodeDiscoveryPort.getLocalNodeId()).thenReturn("daemon-id-abc123");
+
+        service.syncServices();
+
+        var captor = ArgumentCaptor.forClass(ServiceRegistrationDTO.class);
+        verify(viplevApiPort).registerServices(captor.capture());
+
+        var services = captor.getValue().getServices();
+        assertThat(services).hasSize(1);
+        assertThat(services.get(0).getReplicas()).hasSize(1);
+        assertThat(services.get(0).getReplicas().get(0).getContainerName()).isEqualTo("id1");
     }
 
     @Test

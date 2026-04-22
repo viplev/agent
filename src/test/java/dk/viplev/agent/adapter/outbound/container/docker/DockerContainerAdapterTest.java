@@ -200,6 +200,34 @@ class DockerContainerAdapterTest {
     }
 
     @Test
+    void listContainers_fallsBackToContainerIdWhenNameEmpty() {
+        var container = mock(Container.class);
+        when(container.getId()).thenReturn("abc123");
+        when(container.getNames()).thenReturn(new String[]{});
+        when(container.getImage()).thenReturn("nginx:latest");
+        when(container.getImageId()).thenReturn("sha256:abc");
+        when(container.getState()).thenReturn("running");
+        when(container.getLabels()).thenReturn(Map.of());
+
+        var inspection = mock(InspectContainerResponse.class);
+        when(inspection.getHostConfig()).thenReturn(mock(HostConfig.class));
+
+        var listCmd = mock(ListContainersCmd.class);
+        when(dockerClient.listContainersCmd()).thenReturn(listCmd);
+        when(listCmd.exec()).thenReturn(List.of(container));
+
+        var inspectCmd = mock(InspectContainerCmd.class);
+        when(dockerClient.inspectContainerCmd("abc123")).thenReturn(inspectCmd);
+        when(inspectCmd.exec()).thenReturn(inspection);
+
+        var result = adapter.listContainers();
+
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).name()).isEmpty();
+        assertThat(result.get(0).serviceName()).isEqualTo("abc123");
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void getContainerStats_firstCallReturnsZeroCpu() {
         mockStatsCmd("container1", createStatistics(

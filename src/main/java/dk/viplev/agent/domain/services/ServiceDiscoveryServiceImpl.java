@@ -81,9 +81,9 @@ public class ServiceDiscoveryServiceImpl implements ServiceDiscoveryUseCase {
         // Group containers by service name (LinkedHashMap preserves insertion order)
         Map<String, List<ContainerInfo>> serviceGroups = new LinkedHashMap<>();
         for (ContainerInfo container : containers) {
-            String serviceName = container.serviceName() != null 
+            String serviceName = container.serviceName() != null && !container.serviceName().isBlank()
                     ? container.serviceName() 
-                    : container.name();
+                    : (!container.name().isBlank() ? container.name() : container.id());
             serviceGroups.computeIfAbsent(serviceName, k -> new ArrayList<>()).add(container);
         }
         
@@ -117,9 +117,10 @@ public class ServiceDiscoveryServiceImpl implements ServiceDiscoveryUseCase {
     }
 
     private ServiceReplicaDTO toReplicaDto(ContainerInfo container, String machineId) {
+        String containerName = !container.name().isBlank() ? container.name() : container.id();
         return new ServiceReplicaDTO()
                 .containerId(container.id())
-                .containerName(container.name())
+                .containerName(containerName)
                 .machineId(machineId)
                 .startedAt(container.startedAt());
     }
