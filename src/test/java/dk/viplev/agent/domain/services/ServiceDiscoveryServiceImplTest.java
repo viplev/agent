@@ -15,6 +15,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -66,20 +67,29 @@ class ServiceDiscoveryServiceImplTest {
         var registration = captor.getValue();
         assertThat(registration.getHosts()).hasSize(1);
 
-        var hostEntry = registration.getHosts().getFirst();
-        assertThat(hostEntry.getHost().getMachineId()).isEqualTo("daemon-id-abc123");
-        assertThat(hostEntry.getHost().getName()).isEqualTo("test-host");
-        assertThat(hostEntry.getHost().getIpAddress()).isEqualTo("192.168.1.1");
-        assertThat(hostEntry.getHost().getOs()).isEqualTo("Linux");
-        assertThat(hostEntry.getHost().getCpuCores()).isNull();
-        assertThat(hostEntry.getHost().getCpuThreads()).isEqualTo(8);
-        assertThat(hostEntry.getHost().getRamTotalBytes()).isEqualTo(16_000_000_000L);
-        assertThat(hostEntry.getServices()).hasSize(2);
-
-        assertThat(hostEntry.getServices().get(0).getServiceName()).isEqualTo("nginx");
-        assertThat(hostEntry.getServices().get(0).getImageName()).isEqualTo("nginx:latest");
-        assertThat(hostEntry.getServices().get(0).getImageSha()).isEqualTo("sha256:aaa");
-        assertThat(hostEntry.getServices().get(1).getServiceName()).isEqualTo("redis");
+        var host = registration.getHosts().getFirst();
+        assertThat(host.getMachineId()).isEqualTo("daemon-id-abc123");
+        assertThat(host.getName()).isEqualTo("test-host");
+        assertThat(host.getIpAddress()).isEqualTo("192.168.1.1");
+        assertThat(host.getOs()).isEqualTo("Linux");
+        assertThat(host.getCpuCores()).isNull();
+        assertThat(host.getCpuThreads()).isEqualTo(8);
+        assertThat(host.getRamTotalBytes()).isEqualTo(16_000_000_000L);
+        
+        assertThat(registration.getServices()).hasSize(2);
+        
+        var nginxService = registration.getServices().stream()
+                .filter(s -> s.getServiceName().equals("nginx"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(nginxService.getImageName()).isEqualTo("nginx:latest");
+        assertThat(nginxService.getImageSha()).isEqualTo("sha256:aaa");
+        
+        var redisService = registration.getServices().stream()
+                .filter(s -> s.getServiceName().equals("redis"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(redisService.getServiceName()).isEqualTo("redis");
     }
 
     @Test
@@ -97,10 +107,13 @@ class ServiceDiscoveryServiceImplTest {
 
         var hosts = captor.getValue().getHosts();
         assertThat(hosts).hasSize(2);
-        assertThat(hosts.get(0).getHost().getMachineId()).isEqualTo("daemon-id-abc123");
-        assertThat(hosts.get(1).getHost().getMachineId()).isEqualTo("daemon-id-xyz");
-        assertThat(hosts.get(0).getServices()).hasSize(1);
-        assertThat(hosts.get(1).getServices()).isEmpty();
+        assertThat(hosts.get(0).getMachineId()).isEqualTo("daemon-id-abc123");
+        assertThat(hosts.get(1).getMachineId()).isEqualTo("daemon-id-xyz");
+        
+        var services = captor.getValue().getServices();
+        assertThat(services).hasSize(1);
+        assertThat(services.get(0).getReplicas()).hasSize(1);
+        assertThat(services.get(0).getReplicas().get(0).getMachineId()).isEqualTo("daemon-id-abc123");
     }
 
     @Test
@@ -116,7 +129,11 @@ class ServiceDiscoveryServiceImplTest {
         var captor = ArgumentCaptor.forClass(ServiceRegistrationDTO.class);
         verify(viplevApiPort).registerServices(captor.capture());
 
-        assertThat(captor.getValue().getHosts().getFirst().getServices().get(0).getCpuLimit()).isEqualTo(2.0);
+        var service = captor.getValue().getServices().stream()
+                .filter(s -> s.getServiceName().equals("app"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(service.getCpuLimit()).isEqualTo(2.0);
     }
 
     @Test
@@ -132,7 +149,11 @@ class ServiceDiscoveryServiceImplTest {
         var captor = ArgumentCaptor.forClass(ServiceRegistrationDTO.class);
         verify(viplevApiPort).registerServices(captor.capture());
 
-        assertThat(captor.getValue().getHosts().getFirst().getServices().get(0).getCpuReservation()).isEqualTo(1.0);
+        var service = captor.getValue().getServices().stream()
+                .filter(s -> s.getServiceName().equals("app"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(service.getCpuReservation()).isEqualTo(1.0);
     }
 
     @Test
@@ -148,11 +169,14 @@ class ServiceDiscoveryServiceImplTest {
         var captor = ArgumentCaptor.forClass(ServiceRegistrationDTO.class);
         verify(viplevApiPort).registerServices(captor.capture());
 
-        var dto = captor.getValue().getHosts().getFirst().getServices().get(0);
-        assertThat(dto.getCpuLimit()).isNull();
-        assertThat(dto.getCpuReservation()).isNull();
-        assertThat(dto.getMemoryLimitBytes()).isNull();
-        assertThat(dto.getMemoryReservationBytes()).isNull();
+        var service = captor.getValue().getServices().stream()
+                .filter(s -> s.getServiceName().equals("app"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(service.getCpuLimit()).isNull();
+        assertThat(service.getCpuReservation()).isNull();
+        assertThat(service.getMemoryLimitBytes()).isNull();
+        assertThat(service.getMemoryReservationBytes()).isNull();
     }
 
     @Test
@@ -167,6 +191,7 @@ class ServiceDiscoveryServiceImplTest {
         verify(viplevApiPort).registerServices(captor.capture());
 
         assertThat(captor.getValue().getHosts()).isEmpty();
+        assertThat(captor.getValue().getServices()).isEmpty();
     }
 
     @Test
@@ -187,5 +212,141 @@ class ServiceDiscoveryServiceImplTest {
 
         assertThatThrownBy(() -> service.syncServices())
                 .isInstanceOf(ViplevApiException.class);
+    }
+
+    @Test
+    void syncServices_usesServiceNameFromContainerInfo() {
+        var container = new ContainerInfo("id1", "nginx-container-1", "nginx", "nginx:latest", "sha256:aaa", "running",
+                null, null, null, null, null);
+        when(containerPort.listContainers()).thenReturn(List.of(container));
+        when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(testNode));
+        when(nodeDiscoveryPort.getLocalNodeId()).thenReturn("daemon-id-abc123");
+
+        service.syncServices();
+
+        var captor = ArgumentCaptor.forClass(ServiceRegistrationDTO.class);
+        verify(viplevApiPort).registerServices(captor.capture());
+
+        var services = captor.getValue().getServices();
+        assertThat(services).hasSize(1);
+        assertThat(services.get(0).getServiceName()).isEqualTo("nginx");
+    }
+
+    @Test
+    void syncServices_usesServiceNameWhenPresent() {
+        var container = new ContainerInfo("id1", "nginx.1.abc123", "nginx-swarm", "nginx:latest", "sha256:aaa", "running",
+                null, null, null, null, null);
+        when(containerPort.listContainers()).thenReturn(List.of(container));
+        when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(testNode));
+        when(nodeDiscoveryPort.getLocalNodeId()).thenReturn("daemon-id-abc123");
+
+        service.syncServices();
+
+        var captor = ArgumentCaptor.forClass(ServiceRegistrationDTO.class);
+        verify(viplevApiPort).registerServices(captor.capture());
+
+        var services = captor.getValue().getServices();
+        assertThat(services).hasSize(1);
+        assertThat(services.get(0).getServiceName()).isEqualTo("nginx-swarm");
+    }
+
+    @Test
+    void syncServices_fallsBackToContainerNameWhenServiceNameNull() {
+        var container = new ContainerInfo("id1", "standalone-nginx", null, "nginx:latest", "sha256:aaa", "running",
+                null, null, null, null, null);
+        when(containerPort.listContainers()).thenReturn(List.of(container));
+        when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(testNode));
+        when(nodeDiscoveryPort.getLocalNodeId()).thenReturn("daemon-id-abc123");
+
+        service.syncServices();
+
+        var captor = ArgumentCaptor.forClass(ServiceRegistrationDTO.class);
+        verify(viplevApiPort).registerServices(captor.capture());
+
+        var services = captor.getValue().getServices();
+        assertThat(services).hasSize(1);
+        assertThat(services.get(0).getServiceName()).isEqualTo("standalone-nginx");
+    }
+
+    @Test
+    void syncServices_fallsBackToContainerIdWhenServiceNameAndNameBlank() {
+        var container = new ContainerInfo("id1", "", "  ", "nginx:latest", "sha256:aaa", "running",
+                null, null, null, null, null);
+        when(containerPort.listContainers()).thenReturn(List.of(container));
+        when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(testNode));
+        when(nodeDiscoveryPort.getLocalNodeId()).thenReturn("daemon-id-abc123");
+
+        service.syncServices();
+
+        var captor = ArgumentCaptor.forClass(ServiceRegistrationDTO.class);
+        verify(viplevApiPort).registerServices(captor.capture());
+
+        var services = captor.getValue().getServices();
+        assertThat(services).hasSize(1);
+        assertThat(services.get(0).getServiceName()).isEqualTo("id1");
+    }
+
+    @Test
+    void syncServices_usesContainerIdForReplicaNameWhenNameBlank() {
+        var container = new ContainerInfo("id1", "", "nginx", "nginx:latest", "sha256:aaa", "running",
+                null, null, null, null, null);
+        when(containerPort.listContainers()).thenReturn(List.of(container));
+        when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(testNode));
+        when(nodeDiscoveryPort.getLocalNodeId()).thenReturn("daemon-id-abc123");
+
+        service.syncServices();
+
+        var captor = ArgumentCaptor.forClass(ServiceRegistrationDTO.class);
+        verify(viplevApiPort).registerServices(captor.capture());
+
+        var services = captor.getValue().getServices();
+        assertThat(services).hasSize(1);
+        assertThat(services.get(0).getReplicas()).hasSize(1);
+        assertThat(services.get(0).getReplicas().get(0).getContainerName()).isEqualTo("id1");
+    }
+
+    @Test
+    void syncServices_groupsMultipleReplicasByServiceName() {
+        var startedAt1 = LocalDateTime.of(2026, 4, 22, 10, 0, 0);
+        var startedAt2 = LocalDateTime.of(2026, 4, 22, 10, 1, 0);
+        var containers = List.of(
+                new ContainerInfo("id1", "nginx-1", "nginx", "nginx:latest", "sha256:aaa", "running",
+                        startedAt1, 2_000_000_000L, null, 536_870_912L, null),
+                new ContainerInfo("id2", "nginx-2", "nginx", "nginx:latest", "sha256:aaa", "running",
+                        startedAt2, 2_000_000_000L, null, 536_870_912L, null),
+                new ContainerInfo("id3", "redis-1", "redis", "redis:7", "sha256:bbb", "running",
+                        startedAt1, null, null, null, null)
+        );
+        when(containerPort.listContainers()).thenReturn(containers);
+        when(nodeDiscoveryPort.discoverNodes()).thenReturn(List.of(testNode));
+        when(nodeDiscoveryPort.getLocalNodeId()).thenReturn("daemon-id-abc123");
+
+        service.syncServices();
+
+        var captor = ArgumentCaptor.forClass(ServiceRegistrationDTO.class);
+        verify(viplevApiPort).registerServices(captor.capture());
+
+        var services = captor.getValue().getServices();
+        assertThat(services).hasSize(2);
+
+        var nginxService = services.stream()
+                .filter(s -> s.getServiceName().equals("nginx"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(nginxService.getReplicas()).hasSize(2);
+        assertThat(nginxService.getReplicas().get(0).getContainerId()).isEqualTo("id1");
+        assertThat(nginxService.getReplicas().get(0).getContainerName()).isEqualTo("nginx-1");
+        assertThat(nginxService.getReplicas().get(0).getMachineId()).isEqualTo("daemon-id-abc123");
+        assertThat(nginxService.getReplicas().get(0).getStartedAt()).isEqualTo(startedAt1);
+        assertThat(nginxService.getReplicas().get(1).getContainerId()).isEqualTo("id2");
+        assertThat(nginxService.getReplicas().get(1).getContainerName()).isEqualTo("nginx-2");
+        assertThat(nginxService.getReplicas().get(1).getStartedAt()).isEqualTo(startedAt2);
+
+        var redisService = services.stream()
+                .filter(s -> s.getServiceName().equals("redis"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(redisService.getReplicas()).hasSize(1);
+        assertThat(redisService.getReplicas().get(0).getContainerId()).isEqualTo("id3");
     }
 }

@@ -325,9 +325,15 @@ public class DockerContainerAdapter implements ContainerPort, Closeable {
                 ? container.getNames()[0].replaceFirst("^/", "")
                 : "";
 
-        // Extract service name from Swarm label (if present)
+        // Extract service name from Docker labels (priority: Compose > Swarm > container name > container ID)
         Map<String, String> labels = container.getLabels() != null ? container.getLabels() : Map.of();
-        String serviceName = labels.get("com.docker.swarm.service.name");
+        String serviceName = labels.get("com.docker.compose.service");
+        if (serviceName == null || serviceName.isBlank()) {
+            serviceName = labels.get("com.docker.swarm.service.name");
+        }
+        if (serviceName == null || serviceName.isBlank()) {
+            serviceName = !name.isBlank() ? name : container.getId();  // Fall back to container name, then ID
+        }
 
         // Extract startedAt timestamp
         LocalDateTime startedAt = null;
